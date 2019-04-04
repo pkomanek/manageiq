@@ -49,7 +49,7 @@ describe EmsRefresh::SaveInventory do
         @vm2 = FactoryBot.create(:vm_with_ref, :ext_management_system => @ems, :uid_ems => @uid)
       end
 
-      it "should update the duplicate records in the database with the new uid_ems" do
+      it "should reconnect the disconnected vm and update the active vm" do
         data = raw_data_without_dups(@vm1, @vm2)
         EmsRefresh.save_vms_inventory(@ems, data)
 
@@ -87,7 +87,7 @@ describe EmsRefresh::SaveInventory do
         @vm2 = FactoryBot.create(:vm_with_ref, :ext_management_system => @ems, :uid_ems => @uid)
       end
 
-      it "should reconnect the disconnected vm and update the active vm" do
+      it "should update the duplicate records in the database with the new uid_ems" do
         data = raw_data_without_dups(@vm1, @vm2)
         EmsRefresh.save_vms_inventory(@ems, data)
 
