@@ -57,6 +57,8 @@ sortby:
 group: y
 graph:
 dims:
+filename:
+file_mtime:
 categories: []
 timeline:
 template_type: report
