@@ -11,9 +11,12 @@ class MiqAeInstance < ApplicationRecord
   validates_format_of     :name, :with    => /\A[\w.-]+\z/i,
                                  :message => N_("may contain only alphanumeric and _ . - characters")
 
-  def self.find_by_name(name)
+  def self.lookup_by_name(name)
     where("lower(name) = ?", name.downcase).first
   end
+
+  singleton_class.send(:alias_method, :find_by_name, :lookup_by_name)
+  Vmdb::Deprecation.deprecate_methods(singleton_class, :find_by_name => :lookup_by_name)
 
   def get_field_attribute(field, validate, attribute)
     if validate
@@ -22,7 +25,7 @@ class MiqAeInstance < ApplicationRecord
     end
 
     val = ae_values.detect { |v| v.field_id == field.id }
-    val.respond_to?(attribute) ? val.send(attribute) : nil
+    val.try(attribute)
   end
 
   def set_field_attribute(field, value, attribute)

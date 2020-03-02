@@ -1,4 +1,4 @@
-describe MiqPolicy do
+RSpec.describe MiqPolicy do
   context "Testing edge cases on conditions" do
     # The conditions reflection on MiqPolicy is affected when called through a
     # belongs_to or has_one, which is used under the covers in MiqSet.  This
@@ -271,7 +271,7 @@ describe MiqPolicy do
 
     it 'prevents retired instance from starting' do
       MiqQueue.destroy_all
-      @vm.update_attributes(:retired => true)
+      @vm.update(:retired => true)
       expect(subject[:result]).to be true
       expect(subject[:actions].size).to eq(1)
       expect(subject[:details].first["name"]).to eq("(Built-in) Prevent Retired Instance from Starting")

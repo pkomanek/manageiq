@@ -79,6 +79,10 @@ RSpec.describe MiqProvisionRequest do
         expect(@pr.miq_request.first_approval).to eq(MiqApproval.first)
       end
 
+      it "should return the correct queue_name" do
+        expect(@pr.my_queue_name).to eq(vm_template.ext_management_system.queue_name_for_ems_operations)
+      end
+
       it "should return a workflow class" do
         expect(@pr.workflow_class).to eq(ManageIQ::Providers::Vmware::InfraManager::ProvisionWorkflow)
       end
@@ -200,12 +204,6 @@ RSpec.describe MiqProvisionRequest do
               {:count => 12, :memory => 8_589_938_688, :cpu => 32, :storage => 44.gigabytes}
             end
             it_behaves_like "check_quota"
-
-            it "invalid vm_template does not raise error" do
-              create_requests
-              MiqRequest.first.update_attributes(:vm_template => nil)
-              expect { request.check_quota(quota_method) }.not_to raise_error
-            end
           end
 
           context "infra," do

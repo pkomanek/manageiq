@@ -39,10 +39,13 @@ class Host < ApplicationRecord
   has_many                  :storages, :through => :host_storages
   has_many                  :writable_accessible_host_storages, -> { writable_accessible }, :class_name => "HostStorage"
   has_many                  :writable_accessible_storages, :through => :writable_accessible_host_storages, :source => :storage
+
   has_many                  :host_virtual_switches, :class_name => "Switch", :dependent => :destroy, :inverse_of => :host
   has_many                  :host_switches, :dependent => :destroy
   has_many                  :switches, :through => :host_switches
   has_many                  :lans,     :through => :switches
+  has_many                  :host_virtual_lans, :through => :host_virtual_switches, :source => :lans
+
   has_many                  :subnets,  :through => :lans
   has_many                  :networks, :through => :hardware
   has_many                  :patches, :dependent => :destroy
@@ -95,7 +98,6 @@ class Host < ApplicationRecord
   alias_attribute     :state,   :power_state
   alias_attribute     :to_s,    :name
 
-  include SerializedEmsRefObjMixin
   include ProviderObjectMixin
   include EventMixin
 
@@ -144,6 +146,9 @@ class Host < ApplicationRecord
   virtual_total :v_total_vms, :vms
   virtual_total :v_total_miq_templates, :miq_templates
 
+  scope :active,   -> { where.not(:ems_id => nil) }
+  scope :archived, -> { where(:ems_id => nil) }
+
   alias_method :datastores, :storages    # Used by web-services to return datastores as the property name
 
   alias_method :parent_cluster, :ems_cluster
@@ -154,6 +159,8 @@ class Host < ApplicationRecord
 
   include DriftStateMixin
   virtual_delegate :last_scan_on, :to => "last_drift_state_timestamp_rec.timestamp", :allow_nil => true, :type => :datetime
+
+  delegate :queue_name_for_ems_operations, :to => :ext_management_system, :allow_nil => true
 
   include UuidMixin
   include MiqPolicyMixin
@@ -467,7 +474,7 @@ class Host < ApplicationRecord
 
   def resolve_hostname!
     addr = MiqSockUtil.resolve_hostname(hostname)
-    update_attributes!(:ipaddress => addr) unless addr.nil?
+    update!(:ipaddress => addr) unless addr.nil?
   end
 
   # Scan for VMs in a path defined in a repository
@@ -691,7 +698,7 @@ class Host < ApplicationRecord
   # Parent relationship methods
   def parent_folder
     p = parent
-    p.kind_of?(EmsFolder) ? p : nil
+    p if p.kind_of?(EmsFolder)
   end
 
   def owning_folder
@@ -734,6 +741,31 @@ class Host < ApplicationRecord
       end
     end
     errors.empty? ? true : errors
+  end
+
+  def verify_credentials_task(userid, auth_type = nil, options = {})
+    task_opts = {
+      :action => "Verify Host Credentials",
+      :userid => userid
+    }
+
+    queue_opts = {
+      :args        => [auth_type, options],
+      :class_name  => self.class.name,
+      :instance_id => id,
+      :method_name => "verify_credentials?",
+      :queue_name  => queue_name_for_ems_operations,
+      :role        => "ems_operations",
+      :zone        => my_zone
+    }
+
+    MiqTask.generic_action_with_callback(task_opts, queue_opts)
+  end
+
+  def verify_credentials?(*args)
+    # Prevent the connection details, including the password, from being leaked into the logs
+    # and MiqQueue by only returning true/false
+    !!verify_credentials(*args)
   end
 
   def verify_credentials(auth_type = nil, options = {})
@@ -1202,7 +1234,7 @@ class Host < ApplicationRecord
           if hardware.nil?
             EmsRefresh.save_hardware_inventory(self, hw_info)
           else
-            hardware.update_attributes(hw_info)
+            hardware.update(hw_info)
           end
         else
           _log.warn("IPMI Login failed due to a bad username or password.")
@@ -1287,6 +1319,8 @@ class Host < ApplicationRecord
       :method_name  => "scan_from_queue",
       :miq_callback => cb,
       :msg_timeout  => timeout,
+      :role         => "ems_operations",
+      :queue_name   => queue_name_for_ems_operations,
       :zone         => my_zone
     )
   end

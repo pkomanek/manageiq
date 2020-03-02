@@ -22,33 +22,6 @@ module AuthenticationMixin
       assocs = zone.respond_to?(assoc) ? zone.send(assoc) : []
       assocs.each { |a| a.authentication_check_types_queue(:attempt => 1) }
     end
-
-    def self.validate_credentials_task(args, user_id, zone)
-      task_opts = {
-        :action => "Validate EMS Provider Credentials",
-        :userid => user_id
-      }
-
-      queue_opts = {
-        :args        => [*args],
-        :class_name  => name,
-        :method_name => "raw_connect?",
-        :queue_name  => "generic",
-        :role        => "ems_operations",
-        :zone        => zone
-      }
-
-      task_id = MiqTask.generic_action_with_callback(task_opts, queue_opts)
-      task = MiqTask.wait_for_taskid(task_id, :timeout => 30)
-
-      if task.nil?
-        error_message = "Task Error"
-      elsif MiqTask.status_error?(task.status) || MiqTask.status_timeout?(task.status)
-        error_message = task.message
-      end
-
-      [error_message.blank?, error_message]
-    end
   end
 
   def supported_auth_attributes
@@ -378,6 +351,10 @@ module AuthenticationMixin
     true
   end
 
+  # Change the password as a queued task and return the task id. The userid,
+  # current password and new password are mandatory. The auth type is optional
+  # and defaults to 'default'.
+  #
   def change_password_queue(userid, current_password, new_password, auth_type = :default)
     task_opts = {
       :action => "Changing the password for Physical Provider named '#{name}'",
@@ -389,6 +366,7 @@ module AuthenticationMixin
       :instance_id => id,
       :method_name => 'change_password',
       :role        => 'ems_operations',
+      :queue_name  => queue_name_for_ems_operations,
       :zone        => my_zone,
       :args        => [current_password, new_password, auth_type]
     }

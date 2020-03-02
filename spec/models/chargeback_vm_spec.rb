@@ -1,4 +1,4 @@
-describe ChargebackVm do
+RSpec.describe ChargebackVm do
   include Spec::Support::ChargebackHelper
 
   let(:admin) { FactoryBot.create(:user_admin) }
@@ -86,7 +86,7 @@ describe ChargebackVm do
       @vm1.tag_with(@tag.name, :ns => '*')
 
       @host1   = FactoryBot.create(:host, :hardware => FactoryBot.create(:hardware, :memory_mb => 8124, :cpu_total_cores => 1, :cpu_speed => 9576), :vms => [@vm1])
-      @storage = FactoryBot.create(:storage_target_vmware)
+      @storage = FactoryBot.create(:storage_vmware)
       @host1.storages << @storage
 
       @ems_cluster = FactoryBot.create(:ems_cluster, :ext_management_system => ems)
@@ -265,7 +265,7 @@ describe ChargebackVm do
         before do
           options[:tag] = nil
           options[:entity_id] = @vm1.id
-          @vm1.metric_rollups.first.update_attributes(:tag_names => nil)
+          @vm1.metric_rollups.first.update(:tag_names => nil)
         end
 
         it "cpu" do
@@ -429,7 +429,7 @@ describe ChargebackVm do
 
         before do
           Timecop.travel(report_start)
-          @vm1.update_attributes(:retires_on => finish_time)
+          @vm1.update(:retires_on => finish_time)
           add_metric_rollups_for(@vm1, month_beginning...finish_time, 8.hours, metric_rollup_params)
         end
 
@@ -1162,7 +1162,7 @@ describe ChargebackVm do
 
       it "return only one chargeback rate according to tag name of Vm" do
         [rate_assignment_options_1, rate_assignment_options_2].each do |rate_assignment|
-          metric_rollup.update_attributes!(:tag_names => rate_assignment[:tag].first.tag.send(:name_path))
+          metric_rollup.update!(:tag_names => rate_assignment[:tag].first.tag.send(:name_path))
           @vm.tag_with(["/managed/#{metric_rollup.tag_names}"], :ns => '*')
           @vm.reload
           consumption = Chargeback::ConsumptionWithRollups.new(pluck_rollup([metric_rollup]), nil, nil)
@@ -1269,17 +1269,32 @@ describe ChargebackVm do
           let(:options_with_tenant_only_in_default_region) { base_options.merge(:interval => 'monthly', :tenant_id => tenant_default_region.id).tap { |t| t.delete(:tag) } }
           let!(:tenant_default_region) { FactoryBot.create(:tenant, :parent => Tenant.root_tenant) }
 
-          it "raises error" do
-            exception_message = "Unable to find tenant '#{tenant_default_region.name}' (based on tenant id '#{tenant_default_region.id}' from default region) in region #{region_1.region}"
-            expect { ChargebackVm.build_results_for_report_ChargebackVm(options_with_tenant_only_in_default_region) }.to raise_error(MiqException::Error, exception_message)
+          it "generates empty result and doesn't raise error" do
+            exception_message = "Unable to find tenant '#{tenant_default_region.name}' (based on tenant id '#{tenant_default_region.id}' from default region) in region #{region_1.region}."
+
+            log_stub = instance_double("_log")
+            expect(described_class).to receive(:_log).and_return(log_stub).at_least(:once)
+
+            expect(log_stub).to receive(:debug).with(any_args).at_least(:once)
+            expect(log_stub).to receive(:info).with(exception_message + " Calculating chargeback costs skipped for #{tenant_default_region.id} in region #{region_1.region}.").at_least(:once)
+            expect(log_stub).to receive(:info).with(any_args).at_least(:once)
+            expect(ChargebackVm.build_results_for_report_ChargebackVm(options_with_tenant_only_in_default_region).flatten).to be_empty
           end
 
           context "tenant in default region doesn't exists" do
             let(:options_with_missing_tenant) { base_options.merge(:interval => 'monthly', :tenant_id => unknown_number).tap { |t| t.delete(:tag) } }
 
-            it "raises error" do
-              exception_message = "Unable to find tenant '#{unknown_number}'"
-              expect { ChargebackVm.build_results_for_report_ChargebackVm(options_with_missing_tenant) }.to raise_error(exception_message)
+            it "generates empty result and doesn't raise error" do
+              exception_message = "Unable to find tenant '#{unknown_number}'."
+
+              log_stub = instance_double("_log")
+              expect(described_class).to receive(:_log).and_return(log_stub).at_least(:once)
+
+              expect(log_stub).to receive(:debug).with(any_args).at_least(:once)
+              expect(log_stub).to receive(:info).with(exception_message + " Calculating chargeback costs skipped for #{unknown_number} in region #{region_1.region}.").at_least(:once)
+              expect(log_stub).to receive(:info).with(any_args).at_least(:once)
+
+              expect(ChargebackVm.build_results_for_report_ChargebackVm(options_with_missing_tenant).flatten).to be_empty
             end
           end
         end

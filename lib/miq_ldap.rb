@@ -296,8 +296,8 @@ class MiqLdap
       return "#{username}@#{@user_suffix}"
     when "mail"
       username = "#{username}@#{@user_suffix}" unless @user_suffix.blank? || upn?(username)
-      dbuser = User.find_by_email(username.downcase)
-      dbuser ||= User.find_by_userid(username.downcase)
+      dbuser = User.lookup_by_email(username.downcase)
+      dbuser ||= User.lookup_by_userid(username.downcase)
       return dbuser.userid if dbuser && dbuser.userid
 
       return username
@@ -310,7 +310,7 @@ class MiqLdap
     user_type ||= @user_type.split("-").first
     if dn?(username)
       user_type = "dn"
-    elsif upn?(username)
+    elsif user_type != "mail" && upn?(username)
       user_type = "upn"
     end
 
@@ -338,7 +338,7 @@ class MiqLdap
     obj.first if obj
   end
 
-  def get_user_info(username, user_type = 'mail')
+  def get_user_info(username, user_type = nil)
     user = get_user_object(username, user_type)
     return nil if user.nil?
 

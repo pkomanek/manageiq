@@ -126,7 +126,7 @@ class MiqCockpitWsWorker::Runner < MiqWorker::Runner
 
   def process_alive?(pid)
     return false if pid.nil?
-    process_struct = Sys::ProcTable.ps(pid)
+    process_struct = Sys::ProcTable.ps(:pid => pid)
     return false if process_struct.nil?
     return true if process_struct.state != "Z"
 
@@ -148,7 +148,9 @@ class MiqCockpitWsWorker::Runner < MiqWorker::Runner
       "XDG_CONFIG_DIRS" => cockpit_ws.config_dir,
       "DRB_URI"         => @drb_uri
     }
-    stdin, stdout, stderr, wait_thr = Open3.popen3(env, *cockpit_ws.command(BINDING_ADDRESS))
+    Bundler.with_clean_env do
+      stdin, stdout, stderr, wait_thr = Open3.popen3(env, *cockpit_ws.command(BINDING_ADDRESS), :unsetenv_others => true)
+    end
     stdin.close
 
     _log.info("#{log_prefix} cockpit-ws process started - pid=#{@pid}")

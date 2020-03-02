@@ -21,6 +21,10 @@ class ActsAsArModel
     superclass == ActsAsArModel ? self : superclass.base_class
   end
 
+  def self.includes_to_references(_inc)
+    []
+  end
+
   class << self; alias_method :base_model, :base_class; end
 
   #
@@ -141,6 +145,9 @@ class ActsAsArModel
   #
   # Find routines
   #
+  def self.find(*_args)
+    raise NotImplementedError, _("find must be implemented in a subclass")
+  end
 
   # This method is called by QueryRelation upon executing the query.
   #   Since it will receive non-legacy search options, we need to convert

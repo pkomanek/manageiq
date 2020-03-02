@@ -2,6 +2,7 @@ class ExtManagementSystem < ApplicationRecord
   include CustomActionsMixin
   include SupportsFeatureMixin
   include ExternalUrlMixin
+  include VerifyCredentialsMixin
 
   def self.with_tenant(tenant_id)
     tenant = Tenant.find(tenant_id)
@@ -46,6 +47,12 @@ class ExtManagementSystem < ApplicationRecord
     !reflections.include?("parent_manager")
   end
 
+  def self.provider_create_params
+    supported_types_for_create.each_with_object({}) do |ems_type, create_params|
+      create_params[ems_type.name] = ems_type.params_for_create if ems_type.respond_to?(:params_for_create)
+    end
+  end
+
   belongs_to :provider
   has_many :child_managers, :class_name => 'ExtManagementSystem', :foreign_key => 'parent_ems_id'
 
@@ -65,7 +72,7 @@ class ExtManagementSystem < ApplicationRecord
   has_many :disks,             :through => :hardwares
   has_many :physical_servers,  :foreign_key => :ems_id, :inverse_of => :ext_management_system, :dependent => :destroy
 
-  has_many :storages,       -> { distinct },          :through => :hosts
+  has_many :storages, :foreign_key => :ems_id, :dependent => :destroy, :inverse_of => :ext_management_system
   has_many :ems_events,     -> { order("timestamp") }, :class_name => "EmsEvent",    :foreign_key => "ems_id",
                                                       :inverse_of => :ext_management_system
   has_many :generated_events, -> { order("timestamp") }, :class_name => "EmsEvent", :foreign_key => "generating_ems_id",
@@ -80,6 +87,7 @@ class ExtManagementSystem < ApplicationRecord
   has_many :resource_pools, :foreign_key => "ems_id", :dependent => :destroy, :inverse_of => :ext_management_system
   has_many :customization_specs, :foreign_key => "ems_id", :dependent => :destroy, :inverse_of => :ext_management_system
   has_many :storage_profiles,    :foreign_key => "ems_id", :dependent => :destroy, :inverse_of => :ext_management_system
+  has_many :storage_profile_storages, :through => :storage_profiles
   has_many :customization_scripts, :foreign_key => "manager_id", :dependent => :destroy, :inverse_of => :ext_management_system
 
   has_one  :iso_datastore, :foreign_key => "ems_id", :dependent => :destroy, :inverse_of => :ext_management_system
@@ -319,6 +327,12 @@ class ExtManagementSystem < ApplicationRecord
     !!raw_connect(*params)
   end
 
+  # Interface method that should be defined within the EMS of the provider.
+  #
+  def self.raw_connect(*_args)
+    raise NotImplementedError, _("must be implemented in a subclass")
+  end
+
   def self.model_name_from_emstype(emstype)
     model_from_emstype(emstype).try(:name)
   end
@@ -512,9 +526,6 @@ class ExtManagementSystem < ApplicationRecord
 
   def self.refresh_ems(ems_ids, reload = false)
     ems_ids = [ems_ids] unless ems_ids.kind_of?(Array)
-
-    ExtManagementSystem.where(:id => ems_ids).each { |ems| ems.reset_vim_cache_queue if ems.respond_to?(:reset_vim_cache_queue) } if reload
-
     ems_ids = ems_ids.collect { |id| [ExtManagementSystem, id] }
     EmsRefresh.queue_refresh(ems_ids)
   end
@@ -567,11 +578,11 @@ class ExtManagementSystem < ApplicationRecord
   def destroy(task_id = nil)
     disable!(:validate => false) if enabled?
 
-    _log.info("Destroying #{child_managers.count} child_managers")
-    child_managers.destroy_all
-
     # kill workers
     MiqWorker.find_alive.where(:queue_name => queue_name).each(&:kill)
+
+    _log.info("Destroying #{child_managers.count} child_managers")
+    child_managers.destroy_all
 
     super().tap do
       if task_id
@@ -593,6 +604,13 @@ class ExtManagementSystem < ApplicationRecord
 
   def queue_name
     "ems_#{id}"
+  end
+
+  # Until all providers have an operations worker we can continue
+  # to use the GenericWorker to run ems_operations roles.
+  #
+  def queue_name_for_ems_operations
+    'generic'
   end
 
   def enforce_policy(target, event)
@@ -696,11 +714,6 @@ class ExtManagementSystem < ApplicationRecord
 
   def memory_reserve
     get_reserve(:memory_reserve)
-  end
-
-  def vm_log_user_event(_vm, user_event)
-    $log.info(user_event)
-    $log.warn("User event logging is not available on [#{self.class.name}] Name:[#{name}]")
   end
 
   def conversion_hosts

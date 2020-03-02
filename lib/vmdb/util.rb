@@ -97,7 +97,6 @@ module VMDB
 
     def self.zip_logs(zip_filename, dirs, userid = "system")
       require 'zip/filesystem'
-
       zip_dir = Rails.root.join("data", "user", userid)
       FileUtils.mkdir_p(zip_dir) unless File.exist?(zip_dir)
 

@@ -38,7 +38,9 @@ shared_examples "custom_report_with_custom_attributes" do |base_report, custom_a
   end
 end
 
-describe MiqReport do
+RSpec.describe MiqReport do
+  include Spec::Support::ChargebackHelper
+
   context ".for_user" do
     let(:my_user) { FactoryBot.create(:user_with_group) }
     let(:group_in_my_tenant) { FactoryBot.create(:miq_group, :tenant => my_user.current_tenant) }
@@ -54,6 +56,34 @@ describe MiqReport do
       User.current_user = my_user
 
       expect(described_class.for_user(my_user)).to match_array([my_report, report_in_my_tenant])
+    end
+  end
+
+  context "#format_row" do
+    let(:row) { {"boot_time" => Time.now.in_time_zone('Moscow'), "name" => "v2v-ubuntu-kk"} }
+    let(:report) do
+      MiqReport.new(:name => "Timezone test", :title => "tz test", :rpt_group => "Custom",
+                    :rpt_type => "Custom", :db => "Vm", :cols => %w[name boot_time],
+                    :col_order => %w[boot_time name],
+                    :col_formats => [nil, nil],
+                    :col_options => {},
+                    :headers   => ["Boot Time", "Name"],
+                    :order     => "Ascending")
+    end
+
+    it "uses row timezone if no setting exists" do
+      User.current_user = FactoryBot.create(:user)
+      formatted_rpt = report.format_row(row, [], "true")
+      expect(formatted_rpt["boot_time"][:value].zone).to eq("MSK")
+    end
+
+    it "uses user setting" do
+      User.current_user = FactoryBot.create(:user)
+      User.current_user.settings.store_path(:display, :timezone, "Hawaii")
+      User.current_user.with_my_timezone do
+        formatted_rpt = report.format_row(row, ["boot_time", "name"], "true")
+        expect(formatted_rpt["boot_time"][:value].include?("HST")).to eq(true)
+      end
     end
   end
 
@@ -95,18 +125,49 @@ describe MiqReport do
     end
   end
 
+  context "report with disks" do
+    let(:user)     { FactoryBot.create(:user_with_group) }
+    let(:miq_task) { FactoryBot.create(:miq_task) }
+    let(:miq_provision) { FactoryBot.create(:miq_provision) }
+    let(:vm) { FactoryBot.create(:vm_vmware, :miq_provision => miq_provision) }
+
+    before do
+      EvmSpecHelper.local_miq_server
+    end
+
+    let(:report) do
+      MiqReport.new(:name      => "Custom VM report",
+                    :title     => "Custom VM report",
+                    :rpt_group => "Custom",
+                    :rpt_type  => "Custom",
+                    :db        => "ManageIQ::Providers::InfraManager::Vm",
+                    :cols      => %w[name num_disks],
+                    :include   => { "miq_provision_template" => { "columns" => %w[num_hard_disks] }},
+                    :col_order => %w[name miq_provision_template.num_hard_disks num_disks],
+                    :headers   => ["Name", "Provisioned From Template Number of Hard Disks", "Number of Disks"],
+                    :order     => "Ascending")
+    end
+
+    it "doesn't raise error" do
+      expect do
+        report.queue_generate_table(:userid => user.userid)
+        report._async_generate_table(miq_task.id, :userid => user.userid, :mode => "async", :report_source => "Requested by user")
+      end.not_to raise_error
+    end
+  end
+
   context "report with virtual dynamic custom attributes" do
     let(:options)              { {:targets_hash => true, :userid => "admin"} }
-    let(:custom_column_key_1)  { 'kubernetes.io/hostname' }
-    let(:custom_column_key_2)  { 'manageiq.org' }
+    let(:custom_column_key_1)  { 'kubernetes_io_hostname' }
+    let(:custom_column_key_2)  { 'manageiq_org' }
     let(:custom_column_key_3)  { 'ATTR_Name_3' }
     let(:custom_column_value)  { 'value1' }
     let(:user)                 { FactoryBot.create(:user_with_group) }
     let(:ems)                  { FactoryBot.create(:ems_vmware) }
     let!(:vm_1)                { FactoryBot.create(:vm_vmware) }
     let!(:vm_2)                { FactoryBot.create(:vm_vmware, :retired => false, :ext_management_system => ems) }
-    let(:virtual_column_key_1) { "#{CustomAttributeMixin::CUSTOM_ATTRIBUTES_PREFIX}kubernetes.io/hostname" }
-    let(:virtual_column_key_2) { "#{CustomAttributeMixin::CUSTOM_ATTRIBUTES_PREFIX}manageiq.org" }
+    let(:virtual_column_key_1) { "#{CustomAttributeMixin::CUSTOM_ATTRIBUTES_PREFIX}kubernetes_io_hostname" }
+    let(:virtual_column_key_2) { "#{CustomAttributeMixin::CUSTOM_ATTRIBUTES_PREFIX}manageiq_org" }
     let(:virtual_column_key_3) { "#{CustomAttributeMixin::CUSTOM_ATTRIBUTES_PREFIX}ATTR_Name_3" }
     let(:miq_task)             { FactoryBot.create(:miq_task) }
 
@@ -127,9 +188,9 @@ describe MiqReport do
       MiqReport.new(
         :name => "Custom VM report", :title => "Custom VM report", :rpt_group => "Custom", :rpt_type => "Custom",
         :db        => "ManageIQ::Providers::InfraManager::Vm",
-        :cols      => %w(name virtual_custom_attribute_kubernetes.io/hostname virtual_custom_attribute_manageiq.org),
+        :cols      => %w(name virtual_custom_attribute_kubernetes_io_hostname virtual_custom_attribute_manageiq_org),
         :include   => {:custom_attributes => {}},
-        :col_order => %w(name virtual_custom_attribute_kubernetes.io/hostname virtual_custom_attribute_manageiq.org),
+        :col_order => %w(name virtual_custom_attribute_kubernetes_io_hostname virtual_custom_attribute_manageiq_org),
         :headers   => ["Name", custom_column_key_1, custom_column_key_1],
         :order     => "Ascending"
       )
@@ -621,18 +682,21 @@ describe MiqReport do
       expect(report.table.data.collect { |rec| rec.data['miq_provision_vms.name'] }).to eq([vm.name])
     end
 
+    let(:db_options) { {:start_offset => 604_800, :end_offset => 0, :interval => interval} }
     let(:report) do
       MiqReport.new(
-        :name     => "All Departments with Performance", :title => "All Departments with Performance for last week",
-      :db         => "VmPerformance",
-      :cols       => %w(resource_name max_cpu_usage_rate_average cpu_usage_rate_average),
-      :col_order  => ["ems_cluster.name", "vm.v_annotation", "host.name"],
-      :headers    => ["Cluster", "VM Annotations - Notes", "Host Name"],
-      :order      => "Ascending",
-      :group      => "c",
-      :db_options => {:start_offset => 604_800, :end_offset => 0, :interval => interval},
-      :conditions => conditions)
+        :name       => "All Departments with Performance", :title => "All Departments with Performance for last week",
+        :db         => "VmPerformance",
+        :cols       => %w[resource_name max_cpu_usage_rate_average cpu_usage_rate_average timestamp],
+        :col_order  => %w[ems_cluster.name vm.v_annotation host.name"],
+        :headers    => %w[Cluster VM\ Annotations\ -\ Notes Host\ Name],
+        :order      => "Ascending",
+        :group      => "c",
+        :db_options => db_options,
+        :conditions => nil
+      )
     end
+
     context "daily reports" do
       let(:interval) { "daily" }
 
@@ -653,10 +717,51 @@ describe MiqReport do
           end.not_to raise_error
         end
       end
+
+      context "with specific timeframe interval" do
+        let(:vm) { FactoryBot.create(:vm_vmware, :name => "test_vm 2") }
+
+        let(:starting_date) { Time.parse('2012-09-01 23:59:59Z').utc }
+        let(:ts) { starting_date.in_time_zone(Metric::Helper.get_time_zone(:tz => 'UTC')) }
+        let(:first_rollup_timestamp) { ts.beginning_of_month.utc }
+        let(:last_rollup_timestamp) { (ts + 1.month).end_of_month.utc }
+        let(:time_profile) { FactoryBot.create(:time_profile_with_rollup, :profile => {:tz => "UTC", :hours => TimeProfile::ALL_HOURS, :days => TimeProfile::ALL_DAYS}) }
+        let(:user_admin) { FactoryBot.create(:user_admin) }
+
+        before do
+          EvmSpecHelper.create_guid_miq_server_zone
+          rollup_params = {:capture_interval_name => 'daily', :time_profile_id => time_profile.id }
+          add_metric_rollups_for([vm], first_rollup_timestamp...last_rollup_timestamp, 24.hours, rollup_params)
+        end
+
+        let(:reporting_start_day) { ts.beginning_of_day + 5.days }
+        let(:reporting_end_day) { ts.beginning_of_day + 10.days }
+
+        let(:db_options) do
+          {:custom_time_range => true,
+           :start_date        => reporting_start_day,
+           :end_date          => reporting_end_day,
+           :interval          => interval}
+        end
+
+        it "reports data in specific date range" do
+          User.with_user(user_admin) do
+            report.generate_table(:userid => "admin", :mode => "async", :report_source => "Requested by user")
+            expect(report.table.data.count).to eq((reporting_end_day.end_of_day - reporting_start_day).to_f.ceil / 1.day)
+            expect(report.table.data.first["timestamp"]).to eq(reporting_start_day)
+            expect(report.table.data.last["timestamp"]).to eq(reporting_end_day)
+          end
+        end
+      end
     end
     context "performance reports" do
-      let(:report) do
-        MiqReport.new(
+      let(:miq_server) { EvmSpecHelper.local_miq_server }
+      let(:ems) { FactoryBot.create(:ems_vmware, :zone => miq_server.zone) }
+      let(:vm) { FactoryBot.create(:vm_vmware, :ext_management_system => ems) }
+      let(:time_profile) { FactoryBot.create(:time_profile_utc) }
+
+      it "runs daily report" do
+        report = MiqReport.new(
           :title   => "vim_perf_daily.yaml",
           :db      => "VimPerformanceDaily",
           :cols    => %w(timestamp cpu_usagemhz_rate_average max_derived_cpu_available),
@@ -665,10 +770,18 @@ describe MiqReport do
                             cpu_usagemhz_rate_average_low_over_time_period
                             derived_memory_used_high_over_time_period
                             derived_memory_used_low_over_time_period)}})
+        report.generate_table(:userid => "admin")
       end
-      let(:ems) { FactoryBot.create(:ems_vmware, :zone => @server.zone) }
 
-      it "runs report" do
+      it "runs report with polymorphic references" do
+        FactoryBot.create(:metric_rollup_vm_daily, :resource => vm, :time_profile => time_profile)
+
+        report = MiqReport.new(
+          :title     => "vim_perf_daily.yaml",
+          :db        => "VimPerformanceDaily",
+          :col_order => %w[timestamp cpu_usagemhz_rate_average max_derived_cpu_available
+                           resource.derived_memory_used_low_over_time_period]
+        )
         report.generate_table(:userid => "admin")
       end
     end
@@ -850,9 +963,9 @@ describe MiqReport do
   context "support for saving attributes which are not present in the model" do
     let(:report) { FactoryBot.create(:miq_report) }
 
-    it "does not raise error when result of #export_to_array used for mass update" do
-      report_hash = report.export_to_array[0].values.first
-      expect { MiqReport.new.update_attributes(report_hash) }.not_to raise_error
+    it "does not raise error when result of #export_to_array (with report's menu_name removed) used for updating another report" do
+      report_hash = report.export_to_array[0].values.first.except("menu_name")
+      expect { FactoryBot.create(:miq_report).update!(report_hash) }.not_to raise_error
     end
 
     describe "#userid=" do
@@ -900,7 +1013,9 @@ describe MiqReport do
         )
       end
 
-      let(:test_controller) do
+      let(:test_controller) { TestController.new }
+
+      before do
         class TestController
           # when this method returns true it means
           # that column is displayed
@@ -912,9 +1027,9 @@ describe MiqReport do
             User.current_user.super_admin_user?
           end
         end
-
-        TestController.new
       end
+
+      after { Object.send(:remove_const, :TestController) }
 
       let(:user) { FactoryBot.create(:user) }
 
@@ -1103,7 +1218,7 @@ describe MiqReport do
         vm1.labels << label
 
         host1   = FactoryBot.create(:host, :hardware => FactoryBot.create(:hardware, :memory_mb => 8124, :cpu_total_cores => 1, :cpu_speed => 9576), :vms => [vm1])
-        storage = FactoryBot.create(:storage_target_vmware)
+        storage = FactoryBot.create(:storage_vmware)
         host1.storages << storage
 
         ems_cluster = FactoryBot.create(:ems_cluster, :ext_management_system => ems)

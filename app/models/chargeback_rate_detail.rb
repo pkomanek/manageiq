@@ -2,7 +2,7 @@ class ChargebackRateDetail < ApplicationRecord
   belongs_to :chargeback_rate
   belongs_to :chargeable_field
   belongs_to :detail_measure, :class_name => "ChargebackRateDetailMeasure", :foreign_key => :chargeback_rate_detail_measure_id
-  belongs_to :detail_currency, :class_name => "ChargebackRateDetailCurrency", :foreign_key => :chargeback_rate_detail_currency_id
+  belongs_to :detail_currency, :class_name => "Currency", :foreign_key => :chargeback_rate_detail_currency_id, :inverse_of => :chargeback_rate_detail
   has_many :chargeback_tiers, :dependent => :destroy, :autosave => true
 
   default_scope { joins(:chargeable_field).merge(ChargeableField.order(:group => :asc, :description => :asc)) }
@@ -16,11 +16,11 @@ class ChargebackRateDetail < ApplicationRecord
 
   FORM_ATTRIBUTES = %i(description per_time per_unit metric group source metric chargeable_field_id sub_metric).freeze
   PER_TIME_TYPES = {
-    "hourly"  => _("Hourly"),
-    "daily"   => _("Daily"),
-    "weekly"  => _("Weekly"),
-    "monthly" => _("Monthly"),
-    'yearly'  => _('Yearly')
+    "hourly"  => N_("Hourly"),
+    "daily"   => N_("Daily"),
+    "weekly"  => N_("Weekly"),
+    "monthly" => N_("Monthly"),
+    'yearly'  => N_('Yearly')
   }.freeze
 
   # gigabytes -> GiB
@@ -278,7 +278,7 @@ class ChargebackRateDetail < ApplicationRecord
 
       chargeback_rate[:rates].each do |detail|
         detail_new = ChargebackRateDetail.new(detail.slice(*ChargebackRateDetail::FORM_ATTRIBUTES))
-        detail_new.detail_currency = ChargebackRateDetailCurrency.find_by(:code => detail[:type_currency])
+        detail_new.detail_currency = Currency.find_by(:code => detail[:type_currency])
         detail_new.metric = detail[:metric]
         detail_new.chargeable_field = ChargeableField.find_by(:metric => detail.delete(:metric))
 

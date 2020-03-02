@@ -1,4 +1,4 @@
-describe ChargebackRate do
+RSpec.describe ChargebackRate do
   describe "#rate_details_relevant_to" do
     let(:count_hourly_variable_tier_rate) { {:variable_rate => '10'} }
 
@@ -95,7 +95,7 @@ describe ChargebackRate do
 
     context 'when there are valid rate details' do
       let(:symbol) { '฿' }
-      let(:currency) { FactoryBot.create(:chargeback_rate_detail_currency, :symbol => symbol) }
+      let(:currency) { FactoryBot.create(:currency, :symbol => symbol) }
       let(:field) { FactoryBot.create(:chargeable_field) }
       let(:details) { [FactoryBot.create(:chargeback_rate_detail, :detail_currency => currency, :chargeable_field => field)] }
       it { is_expected.to eq(symbol) }

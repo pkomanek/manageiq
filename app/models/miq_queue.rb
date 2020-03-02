@@ -176,9 +176,9 @@ class MiqQueue < ApplicationRecord
   #
   # target_worker:
   #
-  # @options options [String] :class
-  # @options options [String] :instance
-  # @options options [String] :method
+  # @options options [String] :class_name
+  # @options options [String] :instance_id
+  # @options options [String] :method_name
   # @options options [String] :args
   # @options options [String] :target_id (deprecated)
   # @options options [String] :data (deprecated)
@@ -207,12 +207,10 @@ class MiqQueue < ApplicationRecord
       options[:queue_name] = MiqEmsRefreshWorker.queue_name_for_ems(resource)
       options[:role]       = service
       options[:zone]       = resource.my_zone
-    when "ems_operations", "smartstate"
-      # ems_operations, refresh is class method
-      # some smartstate just want MiqServer.my_zone and pass in no resource
-      # options[:queue_name] = "generic"
+    when "ems_operations"
       options[:role] = service
       options[:zone] = resource.try(:my_zone) || MiqServer.my_zone
+      options[:queue_name] = resource.try(:queue_name_for_ems_operations) || "generic"
     when "event"
       options[:queue_name] = "ems"
       options[:role] = service
@@ -227,6 +225,9 @@ class MiqQueue < ApplicationRecord
     when "smartproxy"
       options[:queue_name] = "smartproxy"
       options[:role] = "smartproxy"
+    when "smartstate"
+      options[:role] = service
+      options[:zone] = resource.try(:my_zone) || MiqServer.my_zone
     end
 
     # Note, options[:zone] is set in 'put' via 'determine_queue_zone' and handles setting
@@ -275,7 +276,7 @@ class MiqQueue < ApplicationRecord
       begin
         _log.info("#{MiqQueue.format_short_log_msg(msg)} previously timed out, retrying...") if msg.state == STATE_TIMEOUT
         handler = MiqWorker.my_worker || MiqServer.my_server
-        msg.update_attributes!(:state => STATE_DEQUEUE, :handler => handler)
+        msg.update!(:state => STATE_DEQUEUE, :handler => handler)
         _log.info("#{MiqQueue.format_full_log_msg(msg)}, Dequeued in: [#{Time.now.utc - msg.created_on}] seconds")
         return msg
       rescue ActiveRecord::StaleObjectError
@@ -295,7 +296,7 @@ class MiqQueue < ApplicationRecord
   end
 
   def unget(options = {})
-    update_attributes!(options.merge(:state => STATE_READY, :handler => nil))
+    update!(options.merge(:state => STATE_READY, :handler => nil))
     @delivered_on = nil
     _log.info("#{MiqQueue.format_full_log_msg(self)}, Requeued")
   end
@@ -385,7 +386,7 @@ class MiqQueue < ApplicationRecord
             save_options = save_options.except(:msg_timeout)
           end
 
-          msg.update_attributes!(save_options)
+          msg.update!(save_options)
           _log.info("#{MiqQueue.format_short_log_msg(msg)} updated with following: #{save_options.except(:data, :msg_data).inspect}")
           _log.info("#{MiqQueue.format_full_log_msg(msg)}, Requeued")
         end
@@ -418,7 +419,7 @@ class MiqQueue < ApplicationRecord
     find_by(optional_values(default_get_options(options))).try(:destroy)
   end
 
-  def deliver(requester = nil)
+  def deliver(requester = nil, &block)
     result = nil
     delivered_on
     _log.info("#{MiqQueue.format_short_log_msg(self)}, Delivering...")
@@ -451,7 +452,7 @@ class MiqQueue < ApplicationRecord
       begin
         status = STATUS_OK
         message = "Message delivered successfully"
-        result = User.with_user_group(user_id, group_id) { dispatch_method(obj, args) }
+        result = User.with_user_group(user_id, group_id) { dispatch_method(obj, args, &block) }
       rescue MiqException::MiqQueueRetryLater => err
         unget(err.options)
         message = "Message not processed.  Retrying #{err.options[:deliver_on] ? "at #{err.options[:deliver_on]}" : 'immediately'}"
@@ -476,7 +477,7 @@ class MiqQueue < ApplicationRecord
   def dispatch_method(obj, args)
     Timeout.timeout(msg_timeout) do
       args = activate_miq_task(args)
-      obj.send(method_name, *args)
+      block_given? ? yield : obj.send(method_name, *args)
     end
   end
 
@@ -545,6 +546,14 @@ class MiqQueue < ApplicationRecord
     end
   end
 
+  def self.candidates_for_timeout
+    where(:state => STATE_DEQUEUE).where("(select date_part('epoch', updated_on) + msg_timeout) < ?", Time.now.to_i)
+  end
+
+  def self.check_for_timeout
+    candidates_for_timeout.each(&:check_for_timeout)
+  end
+
   def finished?
     FINISHED_STATES.include?(state)
   end
@@ -554,7 +563,23 @@ class MiqQueue < ApplicationRecord
   end
 
   def self.format_full_log_msg(msg)
-    "Message id: [#{msg.id}], #{msg.handler_type} id: [#{msg.handler_id}], Zone: [#{msg.zone}], Role: [#{msg.role}], Server: [#{msg.server_guid}], MiqTask id: [#{msg.miq_task_id}], Ident: [#{msg.queue_name}], Target id: [#{msg.target_id}], Instance id: [#{msg.instance_id}], Task id: [#{msg.task_id}], Command: [#{msg.class_name}.#{msg.method_name}], Timeout: [#{msg.msg_timeout}], Priority: [#{msg.priority}], State: [#{msg.state}], Deliver On: [#{msg.deliver_on}], Data: [#{msg.data.nil? ? "" : "#{msg.data.length} bytes"}], Args: #{ManageIQ::Password.sanitize_string(msg.args.inspect)}"
+    "Message id: [#{msg.id}], "                                     \
+    "#{msg.handler_type} id: [#{msg.handler_id}], "                 \
+    "Zone: [#{msg.zone}], "                                         \
+    "Role: [#{msg.role}], "                                         \
+    "Server: [#{msg.server_guid}], "                                \
+    "MiqTask id: [#{msg.miq_task_id}], "                            \
+    "Ident: [#{msg.queue_name}], "                                  \
+    "Target id: [#{msg.target_id}], "                               \
+    "Instance id: [#{msg.instance_id}], "                           \
+    "Task id: [#{msg.task_id}], "                                   \
+    "Command: [#{msg.class_name}.#{msg.method_name}], "             \
+    "Timeout: [#{msg.msg_timeout}], "                               \
+    "Priority: [#{msg.priority}], "                                 \
+    "State: [#{msg.state}], "                                       \
+    "Deliver On: [#{msg.deliver_on}], "                             \
+    "Data: [#{msg.data.nil? ? "" : "#{msg.data.length} bytes"}], "  \
+    "Args: #{ManageIQ::Password.sanitize_string(msg.args.inspect)}"
   end
 
   def self.format_short_log_msg(msg)

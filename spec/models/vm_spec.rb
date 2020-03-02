@@ -1,4 +1,4 @@
-describe Vm do
+RSpec.describe Vm do
   include_examples "OwnershipMixin"
 
   it "#corresponding_model" do
@@ -38,6 +38,11 @@ describe Vm do
   it "#validate_remote_console_vmrc_support only suppored on vmware" do
     vm = FactoryBot.create(:vm_redhat, :vendor => "redhat")
     expect { vm.validate_remote_console_vmrc_support }.to raise_error MiqException::RemoteConsoleNotSupportedError
+  end
+
+  it "#validate_native_console_support must be overridden" do
+    vm = FactoryBot.create(:vm_vmware, :vendor => 'vmware')
+    expect { vm.validate_native_console_support }.to raise_error MiqException::RemoteConsoleNotSupportedError
   end
 
   context ".find_all_by_mac_address_and_hostname_and_ipaddress" do
@@ -173,7 +178,7 @@ describe Vm do
     end
 
     it "policy passes" do
-      expect_any_instance_of(ManageIQ::Providers::Vmware::InfraManager::Vm).to receive(:raw_start)
+      expect_any_instance_of(ManageIQ::Providers::Vmware::InfraManager::Vm).to receive(:start_queue)
 
       allow(MiqAeEngine).to receive_messages(:deliver => ['ok', 'sucess', MiqAeEngine::MiqAeWorkspaceRuntime.new])
       @vm.start
@@ -182,7 +187,7 @@ describe Vm do
     end
 
     it "policy prevented" do
-      expect_any_instance_of(ManageIQ::Providers::Vmware::InfraManager::Vm).to_not receive(:raw_start)
+      expect_any_instance_of(ManageIQ::Providers::Vmware::InfraManager::Vm).to_not receive(:start_queue)
 
       event = {:attributes => {"full_data" => {:policy => {:prevented => true}}}}
       allow_any_instance_of(MiqAeEngine::MiqAeWorkspaceRuntime).to receive(:get_obj_from_path).with("/").and_return(:event_stream => event)
@@ -309,7 +314,7 @@ describe Vm do
   context "#supported_consoles" do
     it 'returns all of the console types' do
       vm = FactoryBot.create(:vm)
-      expect(vm.supported_consoles.keys).to match_array([:html5, :vmrc, :cockpit])
+      expect(vm.supported_consoles.keys).to match_array([:html5, :vmrc, :cockpit, :native])
     end
   end
 end

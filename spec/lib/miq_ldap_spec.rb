@@ -1,6 +1,6 @@
 # encoding: US-ASCII
 
-describe MiqLdap do
+RSpec.describe MiqLdap do
   before do
     @host     = 'mycompany.com'
 
@@ -207,6 +207,15 @@ describe MiqLdap do
 
       ldap.get_user_object("myuserid@mycompany.com", "bad_user_type")
     end
+
+    it "filters by mail=<user> when user_type is mail" do
+      ldap = MiqLdap.new(:host => ["192.0.2.2"])
+      @opts[:attributes] = ["*", "memberof"]
+      @opts[:filter] = "(mail=myuserid@mycompany.com)"
+      expect(ldap).to receive(:search).with(@opts)
+
+      ldap.get_user_object("myuserid@mycompany.com", "mail")
+    end
   end
 
   context "#fqusername" do
@@ -264,8 +273,8 @@ describe MiqLdap do
     it "searches for username when user_type is mail even when username is UPN" do
       @opts[:user_type] = 'mail'
       ldap = MiqLdap.new(@opts)
-      expect(User).to receive(:find_by_email)
-      expect(User).to receive(:find_by_userid)
+      expect(User).to receive(:lookup_by_email)
+      expect(User).to receive(:lookup_by_userid)
       expect(ldap.fqusername('myuserid@mycompany.com')).to eq('myuserid@mycompany.com')
     end
   end

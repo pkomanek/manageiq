@@ -62,10 +62,11 @@ module VimPerformanceAnalysis
         @storage = @options[:targets][:storage].to_miq_a
       elsif @options[:target_tags]
         topts = @options[:target_tags]
-        includes = topts[:compute_type].to_sym == :Host ? {:hardware => {}, :vms => {:hardware => {}}} : nil
+        includes = {:hardware => {}, :vms => {:hardware => {}}} if topts[:compute_type].to_sym == :Host
         search_options = {
           :class            => topts[:compute_type].to_s,
           :include_for_find => includes,
+          :references       => includes,
           :userid           => @options[:userid],
           :miq_group_id     => @options[:miq_group_id],
         }

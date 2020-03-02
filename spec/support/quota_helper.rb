@@ -2,7 +2,7 @@ module Spec
   module Support
     module QuotaHelper
       def create_category_and_tag(category, tag)
-        cat = Classification.find_by_name(category)
+        cat = Classification.lookup_by_name(category)
         cat = Classification.create_category!(:name         => category,
                                               :single_value => false,
                                               :description  => category) unless cat
@@ -139,7 +139,7 @@ module Spec
         @vm_hardware = FactoryBot.build(:hardware, :virtual_hw_version => "07", :cpu_total_cores => 2,\
          :memory_mb => 4096, :cpu_sockets => 2, :cpu_cores_per_socket => 1)
         @vm_vmware = FactoryBot.create(:vm_vmware, :hardware => @vm_hardware)
-        @vm_vmware.update_attributes(:ems_id => @ems.id)
+        @vm_vmware.update(:ems_id => @ems.id)
       end
 
       def google_requested_quota_values

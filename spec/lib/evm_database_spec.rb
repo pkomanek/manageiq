@@ -1,6 +1,6 @@
 require 'manageiq-postgres_ha_admin'
 
-describe EvmDatabase do
+RSpec.describe EvmDatabase do
   subject { described_class }
   context "#local?" do
     ["localhost", "127.0.0.1", "", nil].each do |host|
@@ -17,8 +17,8 @@ describe EvmDatabase do
   end
 
   describe ".seed" do
-    it "seeds primordial and non-primordial classes by default" do
-      (described_class::PRIMORDIAL_SEEDABLE_CLASSES + described_class::OTHER_SEEDABLE_CLASSES).each do |klass|
+    it "seeds primordial, non-primordial, and plugin classes by default" do
+      described_class.seedable_classes.each do |klass|
         expect(klass.constantize).to receive(:seed)
       end
 
@@ -64,12 +64,52 @@ describe EvmDatabase do
 
   describe ".seed_rest" do
     it "only seeds non-primordial classes" do
-      described_class::OTHER_SEEDABLE_CLASSES.each do |klass|
+      (described_class::OTHER_SEEDABLE_CLASSES + described_class.seedable_plugin_classes).each do |klass|
         expect(klass.constantize).to receive(:seed)
       end
       expect(described_class::PRIMORDIAL_SEEDABLE_CLASSES.first.constantize).to_not receive(:seed)
 
       described_class.seed_rest
+    end
+  end
+
+  def simulate_primordial_seed
+    described_class.seed(["MiqDatabase", "MiqRegion"])
+  end
+
+  def simulate_full_seed
+    described_class.seed(["MiqDatabase", "MiqRegion", "MiqAction"])
+  end
+
+  describe ".seeded_primordially?" do
+    it "when not seeded" do
+      expect(EvmDatabase.seeded_primordially?).to be false
+    end
+
+    it "when seeded primordially" do
+      simulate_primordial_seed
+      expect(EvmDatabase.seeded_primordially?).to be true
+    end
+
+    it "when fully seeded" do
+      simulate_full_seed
+      expect(EvmDatabase.seeded_primordially?).to be true
+    end
+  end
+
+  describe ".seeded?" do
+    it "when not seeded" do
+      expect(EvmDatabase.seeded?).to be false
+    end
+
+    it "when seeded primordially" do
+      simulate_primordial_seed
+      expect(EvmDatabase.seeded?).to be false
+    end
+
+    it "when fully seeded" do
+      simulate_full_seed
+      expect(EvmDatabase.seeded?).to be true
     end
   end
 
@@ -85,7 +125,7 @@ describe EvmDatabase do
     end
 
     it "will skip when SKIP_SEEDING is set and the database is seeded" do
-      MiqDatabase.seed
+      simulate_primordial_seed
       expect(ENV).to receive(:[]).with("SKIP_SEEDING").and_return("true")
       expect(described_class.send(:skip_seeding?)).to be_truthy
     end

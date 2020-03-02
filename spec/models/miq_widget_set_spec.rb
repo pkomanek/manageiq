@@ -1,4 +1,4 @@
-describe MiqWidgetSet do
+RSpec.describe MiqWidgetSet do
   let(:group) { user.current_group }
   let(:user)  { FactoryBot.create(:user_with_group) }
   before do
@@ -14,7 +14,7 @@ describe MiqWidgetSet do
   context "with a group" do
     it "being deleted" do
       expect(MiqWidgetSet.count).to eq(1)
-      user.miq_groups = []
+      user.destroy
       group.destroy
       expect(MiqWidgetSet.count).to eq(0)
     end
@@ -133,8 +133,8 @@ describe MiqWidgetSet do
     let(:name) { "New Dashboard Name" }
     let(:tab) { "Dashboard Tab" }
 
-    it "raises error if passed name already taken" do
-      expect { MiqWidgetSet.copy_dashboard(@ws_group, @ws_group.name, tab) }.to raise_error(ActiveRecord::RecordInvalid, "Validation failed: MiqWidgetSet: Name has already been taken")
+    it "does not raises error if the same dashboard name used for different groups" do
+      expect { MiqWidgetSet.copy_dashboard(@ws_group, @ws_group.name, tab) }.not_to raise_error
     end
 
     it "raises error if passed tab name is empty" do

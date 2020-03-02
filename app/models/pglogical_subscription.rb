@@ -22,11 +22,14 @@ class PglogicalSubscription < ActsAsArModel
     end
   end
 
-  def self.find_by_id(to_find)
+  def self.lookup_by_id(to_find)
     find(to_find)
   rescue ActiveRecord::RecordNotFound
     nil
   end
+
+  singleton_class.send(:alias_method, :find_by_id, :lookup_by_id)
+  Vmdb::Deprecation.deprecate_methods(singleton_class, :find_by_id => :lookup_by_id)
 
   def save!(reload_failover_monitor = true)
     assert_different_region!
@@ -100,10 +103,16 @@ class PglogicalSubscription < ActsAsArModel
   end
 
   def backlog
-    connection.xlog_location_diff(remote_region_lsn, subscription_attributes["remote_replication_lsn"])
-  rescue PG::Error => e
-    _log.error(e.message)
-    nil
+    if status != "replicating"
+      _log.error("Is `#{dbname}` running on host `#{host}` and accepting TCP/IP connections on port #{port} ?")
+      return nil
+    end
+    begin
+      connection.xlog_location_diff(remote_region_lsn, subscription_attributes["remote_replication_lsn"])
+    rescue PG::Error => e
+      _log.error(e.message)
+      nil
+    end
   end
 
   def sync_tables
@@ -252,12 +261,12 @@ class PglogicalSubscription < ActsAsArModel
   end
 
   def remote_region_lsn
-    with_remote_connection(&:xlog_location)
+    with_remote_connection(5.seconds) { |conn| conn.xlog_location }
   end
 
-  def with_remote_connection
+  def with_remote_connection(connect_timeout = 0)
     find_password
-    MiqRegionRemote.with_remote_connection(host, port || 5432, user, decrypted_password, dbname, "postgresql") do |conn|
+    MiqRegionRemote.with_remote_connection(host, port || 5432, user, decrypted_password, dbname, "postgresql", connect_timeout) do |conn|
       yield conn
     end
   end

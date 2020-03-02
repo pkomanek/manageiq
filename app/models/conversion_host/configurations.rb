@@ -11,6 +11,11 @@ module ConversionHost::Configurations
       )
     end
 
+    # Configure a conversion host as a queued task. The queue name and the
+    # queue zone are derived from the EMS of the resource. The op (method name),
+    # instance id, resource and parameters are all mandatory. The auth user is
+    # optional.
+    #
     def queue_configuration(op, instance_id, resource, params, auth_user = nil)
       task_opts = {
         :action => "Configuring a conversion_host: operation=#{op} resource=(name: #{resource.name} type: #{resource.class.name} id: #{resource.id})",
@@ -23,6 +28,7 @@ module ConversionHost::Configurations
         :instance_id => instance_id,
         :role        => 'ems_operations',
         :zone        => resource.ext_management_system.my_zone,
+        :queue_name  => resource.ext_management_system.queue_name_for_ems_operations,
         :args        => [params, auth_user]
       }
 
@@ -69,7 +75,7 @@ module ConversionHost::Configurations
 
       ssh_key = params.delete(:conversion_host_ssh_private_key)
 
-      openstack_tls_ca_certs = params.delete(:openstack_tls_ca_certs)
+      tls_ca_certs = params.delete(:tls_ca_certs)
 
       new(params).tap do |conversion_host|
         if ssh_key
@@ -81,7 +87,7 @@ module ConversionHost::Configurations
           )
         end
 
-        conversion_host.enable_conversion_host_role(vmware_vddk_package_url, vmware_ssh_private_key, openstack_tls_ca_certs, miq_task_id)
+        conversion_host.enable_conversion_host_role(vmware_vddk_package_url, vmware_ssh_private_key, tls_ca_certs, miq_task_id)
         conversion_host.save!
 
         if miq_task_id

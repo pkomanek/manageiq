@@ -1,4 +1,4 @@
-describe MetricRollup do
+RSpec.describe MetricRollup do
   describe '#parents_determining_rate' do
     let(:ems) { FactoryBot.build(:ems_vmware) }
 
@@ -9,7 +9,7 @@ describe MetricRollup do
 
     context 'VmOrTemplate' do
       let(:ems_cluster) { FactoryBot.build(:ems_cluster, :ext_management_system => ems) }
-      let(:storage) { FactoryBot.build(:storage_target_vmware) }
+      let(:storage) { FactoryBot.build(:storage_vmware) }
       let(:host) { FactoryBot.build(:host) }
       let(:vm) do
         FactoryBot.create(:vm_vmware, :name => 'test_vm', :ems_ref => 'ems_ref',

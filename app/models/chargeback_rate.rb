@@ -84,7 +84,7 @@ class ChargebackRate < ApplicationRecord
         rates = cbr.delete(:rates)
 
         rates.each do |rate_detail|
-          currency = ChargebackRateDetailCurrency.find_by(:code => rate_detail.delete(:type_currency))
+          currency = Currency.find_by(:code => rate_detail.delete(:type_currency))
           field = ChargeableField.find_by(:metric => rate_detail.delete(:metric))
           rate_detail[:chargeable_field_id] = field.id
           if currency
@@ -109,11 +109,11 @@ class ChargebackRate < ApplicationRecord
         else
           if fix_mtime > rec.created_on
             _log.info("Updating [#{cbr[:description]}] with guid=[#{cbr[:guid]}]")
-            rec.update_attributes(cbr)
+            rec.update(cbr)
             rec.chargeback_rate_details.clear
             rec.chargeback_rate_details.create(rates)
             rec.created_on = fix_mtime
-            rec.save
+            rec.save!
           end
         end
       end

@@ -1,8 +1,4 @@
 class ManageIQ::Providers::EmsRefreshWorkflow < Job
-  def self.create_job(options)
-    super(name, options)
-  end
-
   #
   # State-transition diagram:
   #                              :poll_native_task
@@ -44,7 +40,7 @@ class ManageIQ::Providers::EmsRefreshWorkflow < Job
       queue_signal(:error)
     else
       context[:refresh_task_ids] = task_ids
-      update_attributes!(:context => context)
+      update!(:context => context)
 
       queue_signal(:poll_refresh)
     end
@@ -62,17 +58,7 @@ class ManageIQ::Providers::EmsRefreshWorkflow < Job
     role     = options[:role] || "ems_operations"
     priority = options[:priority] || MiqQueue::NORMAL_PRIORITY
 
-    MiqQueue.put(
-      :class_name  => self.class.name,
-      :method_name => "signal",
-      :instance_id => id,
-      :priority    => priority,
-      :role        => role,
-      :zone        => zone,
-      :task_id     => guid,
-      :args        => args,
-      :deliver_on  => deliver_on
-    )
+    super(*args, :role => role, :priority => priority, :deliver_on => deliver_on)
   end
 
   alias_method :initializing, :dispatch_start

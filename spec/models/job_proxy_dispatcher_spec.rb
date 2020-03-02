@@ -1,4 +1,4 @@
-describe JobProxyDispatcher do
+RSpec.describe JobProxyDispatcher do
   include Spec::Support::JobProxyDispatcherHelper
 
   NUM_VMS = 3
@@ -16,6 +16,35 @@ describe JobProxyDispatcher do
 
   before do
     @server = EvmSpecHelper.local_miq_server(:name => "test_server_main_server", :zone => zone)
+  end
+
+  describe '.waiting?' do
+    let(:vm_scan_job) { VmScan.create_job }
+    let(:infra_conversion_job) { InfraConversionJob.create_job }
+
+    it 'returns true if VmScan state is waiting to start and InfraConversionJob state is finished' do
+      vm_scan_job.update!(:state => 'waiting_to_start')
+      infra_conversion_job.update!(:state => 'finished')
+      expect(JobProxyDispatcher.waiting?).to be_truthy
+    end
+
+    it 'returns true if VmScan state is fake_state and InfraConversionJob state is waiting_to_start' do
+      vm_scan_job.update!(:state => 'fake_state')
+      infra_conversion_job.update!(:state => 'waiting_to_start')
+      expect(JobProxyDispatcher.waiting?).to be_truthy
+    end
+
+    it 'returns true if VmScan state is fake_state and InfraConversionJob state is restoring_vm_attributes' do
+      vm_scan_job.update!(:state => 'fake_state')
+      infra_conversion_job.update!(:state => 'restoring_vm_attributes')
+      expect(JobProxyDispatcher.waiting?).to be_truthy
+    end
+
+    it 'returns false if VmScan state is fake_state and no InfraConversionJob state is finished' do
+      vm_scan_job.update!(:state => 'fake_state')
+      infra_conversion_job.update!(:state => 'restoring_vm_attributes')
+      expect(JobProxyDispatcher.waiting?).to be_truthy
+    end
   end
 
   context "With a default zone, server, with hosts with a miq_proxy, vmware vms on storages" do
@@ -58,7 +87,6 @@ describe JobProxyDispatcher do
       context "with a vm without a storage" do
         before do
           # Test a vm without a storage (ie, removed from VC but retained in the VMDB)
-          allow(MiqVimBrokerWorker).to receive(:available_in_zone?).and_return(true)
           @vm = @vms.first
           @vm.storage = nil
           @vm.save
@@ -74,7 +102,6 @@ describe JobProxyDispatcher do
       context "with a Microsoft vm without a storage" do
         before do
           # Test a Microsoft vm without a storage
-          allow(MiqVimBrokerWorker).to receive(:available_in_zone?).and_return(true)
           @vm = @vms.first
           @vm.storage = nil
           @vm.vendor = "microsoft"
@@ -90,7 +117,6 @@ describe JobProxyDispatcher do
       context "with a Microsoft vm with a Microsoft storage" do
         before do
           # Test a Microsoft vm without a storage
-          allow(MiqVimBrokerWorker).to receive(:available_in_zone?).and_return(true)
           @vm = @vms.first
           @vm.storage.store_type = "CSVFS"
           @vm.vendor = "microsoft"
@@ -106,7 +132,6 @@ describe JobProxyDispatcher do
       context "with a Microsoft vm with an invalid storage" do
         before do
           # Test a Microsoft vm without a storage
-          allow(MiqVimBrokerWorker).to receive(:available_in_zone?).and_return(true)
           @vm = @vms.first
           @vm.storage.store_type = "XFS"
           @vm.vendor = "microsoft"
@@ -122,7 +147,6 @@ describe JobProxyDispatcher do
 
       context "with jobs, a default smartproxy for repo scanning" do
         before do
-          allow(MiqVimBrokerWorker).to receive(:available?).and_return(true)
           @repo_proxy = @proxies.last
           if @repo_proxy
             @repo_proxy.name = "repo_proxy"
@@ -265,12 +289,12 @@ describe JobProxyDispatcher do
   end
 
   context "limiting number of smart state analysis running on one server" do
-    let(:job) { Job.create_job("VmScan", :miq_server_id => @server.id, :name => "Hello - 1") }
+    let(:job) { VmScan.create_job(:miq_server_id => @server.id, :name => "Hello - 1") }
     before do
-      Job.create_job("VmScan", :miq_server_id => @server.id, :name => "Hello - 2")
-         .update_attributes(:dispatch_status => "active")
-      Job.create_job("VmScan", :miq_server_id => @server.id, :name => "Hello - 3")
-         .update_attributes(:dispatch_status => "active")
+      VmScan.create_job(:miq_server_id => @server.id, :name => "Hello - 2")
+            .update(:dispatch_status => "active")
+      VmScan.create_job(:miq_server_id => @server.id, :name => "Hello - 3")
+            .update(:dispatch_status => "active")
     end
 
     describe "#busy_proxies" do
@@ -302,7 +326,7 @@ describe JobProxyDispatcher do
 
   describe "#start_job_on_proxy" do
     it "creates job options and passing it to `queue_signal'" do
-      job = Job.create_job("VmScan", :miq_server_id => @server.id, :name => "Hello, World")
+      job = VmScan.create_job(:miq_server_id => @server.id, :name => "Hello, World")
       dispatcher.instance_variable_set(:@active_vm_scans_by_zone, @server.my_zone => 0)
 
       job_options = {:args => ["start"], :zone => @server.my_zone, :server_guid => @server.guid, :role => "smartproxy"}
@@ -315,7 +339,7 @@ describe JobProxyDispatcher do
 
   describe "#do_dispatch" do
     let(:ems_id) { 1 }
-    let(:job) { Job.create_job("VmScan", :name => "Hello, World") }
+    let(:job) { VmScan.create_job(:name => "Hello, World") }
 
     before do
       dispatcher.instance_variable_set(:@active_container_scans_by_zone_and_ems, @server.my_zone => {ems_id => 0})
@@ -358,7 +382,7 @@ describe JobProxyDispatcher do
   end
 
   describe "#queue_signal" do
-    let(:job) { Job.create_job("VmScan", :name => "Hello, World") }
+    let(:job) { VmScan.create_job(:name => "Hello, World") }
 
     it "queues call to Job::StateMachine#signal_abort if signal is 'abort'" do
       options = {:args => [:abort]}
@@ -385,7 +409,7 @@ describe JobProxyDispatcher do
   describe "#dispatch_to_ems" do
     let(:ems_id) { 1 }
     let(:jobs) do
-      [Job.create_job("VmScan", :name => "Hello, World 1"), Job.create_job("VmScan", :name => "Hello, World 2")]
+      [VmScan.create_job(:name => "Hello, World 1"), VmScan.create_job(:name => "Hello, World 2")]
     end
 
     it "dispatches all supplied jobs if supplied concurency limit is 0" do

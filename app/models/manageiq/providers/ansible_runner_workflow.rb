@@ -2,7 +2,7 @@ class ManageIQ::Providers::AnsibleRunnerWorkflow < Job
   def self.create_job(env_vars, extra_vars, role_or_playbook_options,
                       hosts = ["localhost"], credentials = [],
                       timeout: 1.hour, poll_interval: 1.second, verbosity: 0, become_enabled: false)
-    super(name, role_or_playbook_options.merge(
+    super(role_or_playbook_options.merge(
       :become_enabled => become_enabled,
       :credentials    => credentials,
       :env_vars       => env_vars,
@@ -95,18 +95,7 @@ class ManageIQ::Providers::AnsibleRunnerWorkflow < Job
     role     = options[:role] || "ems_operations"
     priority = options[:priority] || MiqQueue::NORMAL_PRIORITY
 
-    MiqQueue.put(
-      :class_name  => self.class.name,
-      :method_name => "signal",
-      :instance_id => id,
-      :priority    => priority,
-      :role        => role,
-      :zone        => zone,
-      :task_id     => guid,
-      :args        => args,
-      :deliver_on  => deliver_on,
-      :server_guid => MiqServer.my_server.guid
-    )
+    super(*args, :priority => priority, :role => role, :deliver_on => deliver_on, :server_guid => MiqServer.my_server.guid)
   end
 
   def deliver_on

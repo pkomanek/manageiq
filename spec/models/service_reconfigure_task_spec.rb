@@ -1,4 +1,4 @@
-describe ServiceReconfigureTask do
+RSpec.describe ServiceReconfigureTask do
   let(:user)     { FactoryBot.create(:user_with_group) }
   let(:template) { FactoryBot.create(:service_template, :name => 'Test Template') }
   let(:service)  { FactoryBot.create(:service, :name => 'Test Service', :service_template => template) }
@@ -43,6 +43,20 @@ describe ServiceReconfigureTask do
         :status  => 'Error',
         :message => 'Service Reconfigure failed')
       task.after_ae_delivery('error')
+    end
+
+    it "updates service's dialog options if reconfigure passes" do
+      service.update(:options => {:dialog => {:var1 => "value"}})
+      task.options[:dialog] = {:var1 => "new_value"}
+      task.after_ae_delivery('ok')
+      expect(service.options[:dialog]).to include(:var1 => "new_value")
+    end
+
+    it "does not update service's dialog options if reconfigure fails" do
+      service.update(:options => {:dialog => {:var1 => "value"}})
+      task.options[:dialog] = {:var1 => "new_value"}
+      task.after_ae_delivery('error')
+      expect(service.options[:dialog]).to include(:var1 => "value")
     end
   end
 

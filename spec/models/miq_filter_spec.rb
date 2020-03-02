@@ -1,4 +1,4 @@
-describe MiqFilter do
+RSpec.describe MiqFilter do
   let(:ems)             { FactoryBot.create(:ems_vmware, :name => 'ems') }
   let(:datacenter)      { FactoryBot.create(:ems_folder, :name => "Datacenters").tap { |dc| dc.parent = ems } }
   let(:mtc)             { FactoryBot.create(:datacenter, :name => "MTC").tap { |mtc| mtc.parent = datacenter } }
@@ -54,7 +54,7 @@ describe MiqFilter do
       let(:network_manager_folder_path) { "/belongsto/ExtManagementSystem|#{ems_openstack.name} Network Manager" }
 
       it "converts path with network manager" do
-        ems_openstack.update_attributes(:name => "XXX")
+        ems_openstack.update(:name => "XXX")
         expect(belongsto2object_list(network_manager_folder_path)).to match_array([ems_openstack.network_manager])
       end
     end

@@ -507,7 +507,7 @@ class MiqRequestWorkflow
     unless email.blank?
       l = MiqLdap.new
       if l.bind_with_default == true
-        raise _("No information returned for %{email}") % {:email => email} if (d = l.get_user_info(email)).nil?
+        raise _("No information returned for %{email}") % {:email => email} if (d = l.get_user_info(email, "mail")).nil?
         [:first_name, :last_name, :address, :city, :state, :zip, :country, :title, :company,
          :department, :office, :phone, :phone_mobile, :manager, :manager_mail, :manager_phone].each do |prop|
           @values["owner_#{prop}".to_sym] = d[prop].try(:dup)
@@ -752,7 +752,7 @@ class MiqRequestWorkflow
     values[:requester_group] ||= @requester.current_group.description
     email = values[:owner_email]
     if email.present? && values[:owner_group].blank?
-      values[:owner_group] = User.find_by_lower_email(email, @requester).try(:miq_group_description)
+      values[:owner_group] = User.lookup_by_lower_email(email, @requester).try(:miq_group_description)
     end
   end
 
@@ -768,6 +768,12 @@ class MiqRequestWorkflow
   end
 
   def update_field_visibility
+  end
+
+  # Subclasses should define this as appropriate.
+  #
+  def get_source_and_targets(_refresh = false)
+    raise NotImplementedError, _("get_source_and_targets must be implemented in a subclass")
   end
 
   def refresh_field_values(values)
@@ -871,7 +877,7 @@ class MiqRequestWorkflow
         else
           path << " / ".freeze << folder.name
         end
-        dh[folder.id] = path unless folder.type == "Datacenter".freeze
+        dh[folder.id] = path unless folder.datacenter?
       end
     end
 
@@ -923,7 +929,7 @@ class MiqRequestWorkflow
     # Walk the xml document parents to find the requested class
     while node.kind_of?(XmlHash::Element)
       ci = node.attributes[:object]
-      if node.name == klass_name && (datacenter == false || datacenter == true && ci.type == "Datacenter")
+      if node.name == klass_name && (datacenter == false || datacenter == true && ci.datacenter?)
         result = ci
         break
       end
@@ -1003,7 +1009,9 @@ class MiqRequestWorkflow
   end
 
   def ems_folder_to_hash_struct(ci)
-    build_ci_hash_struct(ci, [:name, :type, :hidden])
+    build_ci_hash_struct(ci, [:name, :type, :hidden]).tap do |nh|
+      nh.send("datacenter?=", ci.kind_of?(Datacenter))
+    end
   end
 
   def storage_to_hash_struct(ci)

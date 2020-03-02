@@ -23,13 +23,14 @@ module MiqWebServerWorkerMixin
     end
 
     def preload_for_worker_role
+      raise "Expected database to be seeded via `rake db:seed`." unless EvmDatabase.seeded_primordially?
       configure_secret_token
     end
 
     def configure_secret_token(token = MiqDatabase.first.session_secret_token)
-      return if Rails.application.config.secret_token
+      return if Rails.application.config.secret_key_base
 
-      Rails.application.config.secret_token = token
+      Rails.application.config.secret_key_base = token
 
       # To set a secret token after the Rails.application is initialized,
       # we need to reset the secrets since they are cached:
@@ -38,7 +39,7 @@ module MiqWebServerWorkerMixin
     end
 
     def rails_server
-      ::Settings.server.rails_server
+      "puma"
     end
 
     def all_ports_in_use
@@ -55,7 +56,7 @@ module MiqWebServerWorkerMixin
 
       workers = find_current_or_starting
       current = workers.length
-      desired = self.has_required_role? ? self.workers : 0
+      desired = self.workers
       result  = {:adds => [], :deletes => []}
       ports = all_ports_in_use
 
@@ -134,30 +135,6 @@ module MiqWebServerWorkerMixin
   def start
     delete_pid_file
     super
-  end
-
-  def terminate
-    # HACK: Cannot call exit properly from UiWorker nor can we Process.kill('INT', ...) from inside the worker
-    # Hence, this is an external mechanism for terminating this worker.
-
-    begin
-      _log.info("Terminating #{format_full_log_msg}, status [#{status}]")
-      Process.kill("TERM", pid)
-      # TODO: Variablize and clean up this 10-second-max loop of waiting on Worker to gracefully shut down
-      10.times do
-        unless MiqProcess.alive?(pid)
-          update_attributes(:stopped_on => Time.now.utc, :status => MiqWorker::STATUS_STOPPED)
-          break
-        end
-        sleep 1
-      end
-    rescue Errno::ESRCH
-      _log.warn("#{format_full_log_msg} has been killed")
-    rescue => err
-      _log.warn("#{format_full_log_msg} has been killed, but with the following error: #{err}")
-    end
-
-    kill if MiqProcess.alive?(pid)
   end
 
   def kill

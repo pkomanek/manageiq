@@ -1,4 +1,5 @@
-require 'kubeclient'
+autoload(:Kubeclient, 'kubeclient')
+autoload(:KubeException, 'kubeclient')
 
 class ContainerOrchestrator
   include_concern 'ObjectDefinition'
@@ -10,20 +11,20 @@ class ContainerOrchestrator
     File.exist?(TOKEN_FILE) && File.exist?(CA_CERT_FILE)
   end
 
-  def scale(deployment_config_name, replicas)
-    connection.patch_deployment_config(deployment_config_name, { :spec => { :replicas => replicas } }, my_namespace)
+  def scale(deployment_name, replicas)
+    kube_apps_connection.patch_deployment(deployment_name, { :spec => { :replicas => replicas } }, my_namespace)
   end
 
-  def create_deployment_config(name)
-    definition = deployment_config_definition(name)
+  def create_deployment(name)
+    definition = deployment_definition(name)
     yield(definition) if block_given?
-    connection.create_deployment_config(definition)
+    kube_apps_connection.create_deployment(definition)
   rescue KubeException => e
     raise unless e.message =~ /already exists/
   end
 
-  def create_service(name, port)
-    definition = service_definition(name, port)
+  def create_service(name, selector, port)
+    definition = service_definition(name, selector, port)
     yield(definition) if block_given?
     kube_connection.create_service(definition)
   rescue KubeException => e
@@ -38,21 +39,9 @@ class ContainerOrchestrator
     raise unless e.message =~ /already exists/
   end
 
-  def delete_deployment_config(name)
-    rc = kube_connection.get_replication_controllers(
-      :label_selector => "openshift.io/deployment-config.name=#{name}",
-      :namespace      => my_namespace
-    ).first
-
+  def delete_deployment(name)
     scale(name, 0)
-    connection.delete_deployment_config(name, my_namespace)
-    delete_replication_controller(rc.metadata.name) if rc
-  rescue KubeException => e
-    raise unless e.message =~ /not found/
-  end
-
-  def delete_replication_controller(name)
-    kube_connection.delete_replication_controller(name, my_namespace)
+    kube_apps_connection.delete_deployment(name, my_namespace)
   rescue KubeException => e
     raise unless e.message =~ /not found/
   end
@@ -71,12 +60,12 @@ class ContainerOrchestrator
 
   private
 
-  def connection
-    @connection ||= raw_connect(manager_uri("/oapi"))
-  end
-
   def kube_connection
     @kube_connection ||= raw_connect(manager_uri("/api"))
+  end
+
+  def kube_apps_connection
+    @kube_apps_connection ||= raw_connect(manager_uri("/apis/apps"))
   end
 
   def raw_connect(uri)

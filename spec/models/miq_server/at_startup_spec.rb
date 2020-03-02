@@ -1,4 +1,4 @@
-describe MiqServer, "::AtStartup" do
+RSpec.describe MiqServer, "::AtStartup" do
   describe ".clean_dequeued_messages" do
     before do
       _guid, @miq_server, @zone = EvmSpecHelper.create_guid_miq_server_zone
@@ -47,6 +47,15 @@ describe MiqServer, "::AtStartup" do
         expect(msg.state).to eq(MiqQueue::STATE_ERROR)
       end
     end
+  end
+
+  it ".log_under_management (private)" do
+    MiqRegion.seed
+    ems = FactoryBot.create(:ems_infra)
+    FactoryBot.create(:host_vmware, :ext_management_system => ems)
+    FactoryBot.create(:vm_vmware, :ext_management_system => ems)
+    expect($log).to receive(:info).with(/VMs: \[1\], Hosts: \[1\]/)
+    described_class.send(:log_under_management, "")
   end
 
   it ".log_not_under_management (private)" do

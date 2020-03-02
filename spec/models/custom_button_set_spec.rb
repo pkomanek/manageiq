@@ -1,4 +1,4 @@
-describe CustomButtonSet do
+RSpec.describe CustomButtonSet do
   context "find_all_by_class_name" do
     it "should return all Service and ServiceTemplate buttons only, when ServiceTemplate class is passed in" do
       set_data = {:applies_to_class => "Service", :group_index => 2}
@@ -102,6 +102,20 @@ describe CustomButtonSet do
       expect(custom_button_set.children).not_to include(custom_button_1)
       expect(custom_button_set.children).to include(custom_button_2)
       expect(custom_button_set.children).to include(custom_button_3)
+    end
+
+    it "skips nonexistent buttons, cleaning button_order" do
+      expect(custom_button_set.children.count).to eq(2)
+      expect(custom_button_set.set_data[:button_order]).to eq([custom_button_1.id, custom_button_2.id])
+
+      custom_button_2.destroy!
+      custom_button_set.save!
+
+      expect(custom_button_set.children.count).to eq(1)
+      expect(custom_button_set.children).to include(custom_button_1)
+      expect(custom_button_set.children).not_to include(custom_button_2)
+      expect(custom_button_set.children).not_to include(custom_button_3)
+      expect(custom_button_set.set_data[:button_order]).to eq([custom_button_1.id])
     end
   end
 end

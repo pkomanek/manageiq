@@ -1,4 +1,4 @@
-describe ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job do
+RSpec.describe ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job do
   let(:job) { FactoryBot.create(:embedded_ansible_job) }
 
   before do
@@ -14,7 +14,7 @@ describe ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job do
     end
 
     let(:ansible_script_source) { FactoryBot.create(:embedded_ansible_configuration_script_source, :manager => manager) }
-    let(:playbook)              { FactoryBot.create(:embedded_playbook, :configuration_script_source => ansible_script_source) }
+    let(:playbook)              { FactoryBot.create(:embedded_playbook, :configuration_script_source => ansible_script_source, :manager => manager) }
     let(:manager)               { FactoryBot.create(:embedded_automation_manager_ansible, :provider) }
 
     let(:machine_credential)    { FactoryBot.create(:ansible_machine_credential, :manager_ref => "1", :resource => manager) }
@@ -22,108 +22,117 @@ describe ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job do
     let(:network_credential)    { FactoryBot.create(:ansible_network_credential, :manager_ref => "3", :resource => manager) }
     let(:vault_credential)      { FactoryBot.create(:ansible_vault_credential,   :manager_ref => "4", :resource => manager) }
 
-    let(:template) { FactoryBot.create(:embedded_ansible_configuration_script, :manager => manager, :parent => playbook) }
+    let(:job_options) do
+      {
+        :credential         => machine_credential.id,
+        :cloud_credential   => cloud_credential.id,
+        :network_credential => network_credential.id,
+        :vault_credential   => vault_credential.id
+      }
+    end
 
     describe "job operations" do
       describe ".create_job" do
-        context "template is persisted" do
-          it "creates a job" do
-            job = described_class.create_job(template, {})
-            expect(job.class).to                 eq(described_class)
-            expect(job.name).to                  eq(template.name)
-            expect(job.ems_ref).to               eq(job.miq_task.id.to_s)
-            expect(job.job_template).to          eq(template)
-            expect(job.status).to                eq(job.miq_task.state)
-            expect(job.ext_management_system).to eq(manager)
-            expect(job.retireable?).to           be false
-          end
-        end
-
-        context "template is temporary" do
-          let(:template) { FactoryBot.build(:embedded_ansible_configuration_script, :manager => manager, :parent => playbook) }
-
-          it "creates a job" do
-            job = described_class.create_job(template, {})
-            expect(job.job_template).to be_nil
-          end
+        it "creates a job" do
+          job = described_class.create_job(playbook, job_options)
+          expect(job.class).to                 eq(described_class)
+          expect(job.name).to                  eq(playbook.name)
+          expect(job.ems_ref).to               eq(job.miq_task.id.to_s)
+          expect(job.playbook).to              eq(playbook)
+          expect(job.status).to                eq(job.miq_task.state)
+          expect(job.ext_management_system).to eq(manager)
+          expect(job.retireable?).to           be false
         end
 
         it "catches errors from provider" do
-          expect(template).to receive(:run).and_raise("bad request")
+          expect(playbook).to receive(:run).and_raise("bad request")
 
           expect do
-            described_class.create_job(template, {})
+            described_class.create_job(playbook, {})
           end.to raise_error(MiqException::MiqOrchestrationProvisionError)
-        end
-
-        context "options have extra_vars" do
-          let(:template) do
-            FactoryBot.build(:embedded_ansible_configuration_script,
-                             :manager     => manager,
-                             :parent      => playbook,
-                             :variables   => {"Var1" => "v1", "VAR2" => "v2"},
-                             :survey_spec => {"spec" => [{"default" => "v3", "variable" => "var3", "type" => "text"}]})
-          end
-
-          it "updates the extra_vars with original keys" do
-            described_class.create_job(template, :extra_vars => {"var1" => "n1", "var2" => "n2", "VAR3" => "n3"})
-          end
         end
       end
 
       context "#refresh_ems" do
-        subject { described_class.create_job(template, {}) }
+        subject { described_class.create_job(playbook, job_options) }
+
+        before { Timecop.freeze }
+        after  { Timecop.return }
+
+        let(:the_raw_plays) do
+          [
+            {
+              "id"         => 1,
+              "event"      => "playbook_on_play_start",
+              "failed"     => false,
+              "created"    => Time.current,
+              "event_data" => {"play" => "play1"}
+            },
+            {
+              "id"         => 2,
+              "event"      => "some_other_event",
+              "failed"     => false,
+              "created"    => Time.current + 5,
+              "event_data" => {"stdout" => "foo"}
+            },
+            {
+              "id"         => 3,
+              "event"      => "playbook_on_play_start",
+              "failed"     => true,
+              "created"    => Time.current + 10,
+              "event_data" => {"play" => "play2"}
+            }
+          ]
+        end
 
         it "syncs the job with the provider" do
+          fake_finish_time = the_raw_plays.last["created"] + 15
+          allow(subject).to receive(:finish_time).and_return(fake_finish_time)
+          expect(subject).to receive(:raw_stdout_json).and_return(the_raw_plays)
           subject.refresh_ems
 
           expect(subject).to have_attributes(
             :ems_ref     => subject.miq_task.id.to_s,
             :status      => subject.miq_task.state,
             :start_time  => subject.miq_task.started_on,
-            :finish_time => nil,
-            :verbosity   => nil # TODO:  Implement this as an job options, right?
+            :finish_time => fake_finish_time,
+            :verbosity   => 0
           )
           subject.reload
           expect(subject.ems_ref).to eq(subject.miq_task.id.to_s)
           expect(subject.status).to  eq(subject.miq_task.state)
+
+          expect(subject.authentications).to match_array([machine_credential, vault_credential, cloud_credential, network_credential])
+
+          expect(subject.job_plays.first).to have_attributes(
+            :start_time        => a_value_within(1.second).of(the_raw_plays.first["created"]),
+            :finish_time       => a_value_within(1.second).of(the_raw_plays.last["created"]),
+            :resource_status   => "successful",
+            :resource_category => "job_play",
+            :name              => "play1"
+          )
+          expect(subject.job_plays.last).to have_attributes(
+            :start_time        => a_value_within(1.second).of(the_raw_plays.last["created"]),
+            :finish_time       => a_value_within(1.second).of(fake_finish_time),
+            :resource_status   => "failed",
+            :resource_category => "job_play",
+            :name              => "play2"
+          )
 
           # TODO/FIXME:  This needs to be implemented.
           #
           # The following are implemented in AnsibleTower::Job but not here:
           #
           #   - update_parameters
-          #   - update_credentials
-          #   - update_plays
           #
           # expect(subject.parameters.first).to have_attributes(:name => "param1", :value => "val1")
-          # expect(subject.authentications).to match_array([machine_credential, vault_credential, cloud_credential, network_credential])
-          # expect(subject.job_plays.first).to have_attributes(
-          #   :start_time        => a_value_within(1.second).of(the_raw_plays.first.created),
-          #   :finish_time       => a_value_within(1.second).of(the_raw_plays.last.created),
-          #   :resource_status   => "successful",
-          #   :resource_category => "job_play",
-          #   :name              => "play1"
-          # )
-          # expect(subject.job_plays.last).to have_attributes(
-          #   :start_time        => a_value_within(1.second).of(the_raw_plays.last.created),
-          #   :finish_time       => a_value_within(1.second).of(the_raw_job.finished),
-          #   :resource_status   => "failed",
-          #   :resource_category => "job_play",
-          #   :name              => "play2"
-          # )
+          #
         end
-
-        # TODO:  This is should be irrelevant now, right?
-        # it "catches errors from provider" do
-        #   expect(connection.api.jobs).to receive(:find).and_raise("bad request")
-        #   expect { subject.refresh_ems }.to raise_error(MiqException::MiqOrchestrationUpdateError)
-        # end
       end
     end
 
     describe "job status" do
-      subject { described_class.create_job(template, {}) }
+      subject { described_class.create_job(playbook, {}) }
 
       context "#raw_status and #raw_exists" do
         it "gets the stack status" do
@@ -140,7 +149,7 @@ describe ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job do
     #        to set this up in a time crunch.
 
     # describe "#raw_stdout" do
-    #   subject { described_class.create_job(template, {}) }
+    #   subject { described_class.create_job(playbook, {}) }
 
     #   it "gets the standard output of the job" do
     #     expect(subject.raw_stdout("html")).to eq("<html><body>job stdout</body></html>")
@@ -159,7 +168,7 @@ describe ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job do
 
     #     allow(MiqTask).to receive(:wait_for_taskid) do
     #       request = MiqQueue.find_by(:class_name => described_class.name)
-    #       request.update_attributes(:state => MiqQueue::STATE_DEQUEUE)
+    #       request.update(:state => MiqQueue::STATE_DEQUEUE)
     #       request.delivered(*request.deliver)
     #     end
     #   end

@@ -7,12 +7,9 @@ module Vmdb
       #   * command line(rails server)
       #   * debugger
       if defined?(Rails::Server)
-        # preload_for_worker_role depends on seeding, principally MiqDatabase
-        EvmDatabase.seed_primordial
-
         MiqUiWorker.preload_for_worker_role
         MiqServer.my_server.starting_server_record
-        MiqServer.my_server.update_attributes(:status => "started")
+        MiqServer.my_server.update(:status => "started")
       end
 
       # Rails console needs session store configured

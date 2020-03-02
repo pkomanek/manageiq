@@ -1,4 +1,4 @@
-describe Condition do
+RSpec.describe Condition do
   describe ".subst" do
     context "evaluation of virtual custom attributes from left and right side" do
       let(:custom_attribute_1)         { FactoryBot.create(:custom_attribute, :name => "attr_1", :value => 20) }
@@ -170,6 +170,36 @@ describe Condition do
       record = ServiceContainerTemplate.new
       _, result_record, _ = described_class.options2hash("ref=service", record)
       expect(result_record).to be(record)
+    end
+  end
+
+  describe ".registry_data" do
+    let(:name_and_value) { "HKLM\\SOFTWARE\\WindowsFirewall : EnableFirewall" }
+    let(:registry_item) { FactoryBot.create(:registry_item, :name => name_and_value, :data => "100") }
+    let(:vm) { FactoryBot.create(:vm_vmware, :registry_items => [registry_item]) }
+
+    it "finds registry item record when key exists" do
+      expect(described_class.registry_data(vm, 'HKLM', :key_exists => true)).to be_truthy
+    end
+
+    it "doesn't find registry item record when key exists" do
+      expect(described_class.registry_data(vm, 'SOFTWARE_X', :key_exists => true)).not_to be_truthy
+    end
+
+    it "finds registry item record when value exists" do
+      expect(described_class.registry_data(vm, name_and_value, :value_exists => true)).to be_truthy
+    end
+
+    it "doesn't find registry item record when value exists" do
+      expect(described_class.registry_data(vm, name_and_value + "X", :value_exists => true)).not_to be_truthy
+    end
+
+    it "returns registry data" do
+      expect(described_class.registry_data(vm, name_and_value, {})).to eq("100")
+    end
+
+    it "doesn't returns registry data" do
+      expect(described_class.registry_data(vm, name_and_value + "X", {})).to be_nil
     end
   end
 end

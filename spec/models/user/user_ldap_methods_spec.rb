@@ -1,4 +1,4 @@
-describe Authenticator::Ldap do
+RSpec.describe Authenticator::Ldap do
   before do
     EvmSpecHelper.create_guid_miq_server_zone
     @auth_config = {
@@ -58,14 +58,14 @@ describe Authenticator::Ldap do
     it "password is blank" do
       @password = ""
       expect(AuditEvent).to receive(:failure)
-      expect(-> { subject }).to raise_error(MiqException::MiqEVMLoginError, "Authentication failed")
+      expect { subject }.to raise_error(MiqException::MiqEVMLoginError, "Authentication failed")
     end
 
     it "ldap bind fails" do
       allow(@miq_ldap).to receive_messages(:bind => false)
 
       expect(AuditEvent).to receive(:failure)
-      expect(-> { subject }).to raise_error(MiqException::MiqEVMLoginError, "Authentication failed")
+      expect { subject }.to raise_error(MiqException::MiqEVMLoginError, "Authentication failed")
     end
 
     context "ldap binds" do

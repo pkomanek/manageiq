@@ -1,6 +1,6 @@
 require "inventory_refresh"
 
-describe EmsRefresh do
+RSpec.describe EmsRefresh do
   context ".queue_refresh" do
     before do
       _guid, _server, zone = EvmSpecHelper.create_guid_miq_server_zone
@@ -34,8 +34,7 @@ describe EmsRefresh do
     end
 
     it "with Storage" do
-      allow_any_instance_of(Storage).to receive_messages(:ext_management_systems => [@ems])
-      target = FactoryBot.create(:storage_vmware)
+      target = FactoryBot.create(:storage_vmware, :ext_management_system => @ems)
       queue_refresh_and_assert_queue_item(target, [target])
     end
 
@@ -44,14 +43,6 @@ describe EmsRefresh do
       queue_refresh_and_assert_queue_item(target, [target])
       target2 = FactoryBot.create(:vm_vmware, :ext_management_system => @ems)
       queue_refresh_and_assert_queue_item(target2, [target, target2])
-    end
-
-    it "with streaming refresh enabled doesn't queue a refresh" do
-      allow(@ems).to receive(:supports_streaming_refresh?).and_return(true)
-      target = @ems
-
-      described_class.queue_refresh(target)
-      expect(MiqQueue.count).to eq(0)
     end
   end
 
@@ -263,12 +254,11 @@ describe EmsRefresh do
     context 'targeting a new vm' do
       let(:vm_hash) do
         {
-          :type        => ManageIQ::Providers::InfraManager::Vm.name,
-          :ems_ref     => 'vm-123',
-          :ems_ref_obj => 'vm-123',
-          :uid_ems     => 'vm-123',
-          :name        => 'new-vm',
-          :vendor      => 'unknown'
+          :type    => ManageIQ::Providers::InfraManager::Vm.name,
+          :ems_ref => 'vm-123',
+          :uid_ems => 'vm-123',
+          :name    => 'new-vm',
+          :vendor  => 'unknown'
         }
       end
 

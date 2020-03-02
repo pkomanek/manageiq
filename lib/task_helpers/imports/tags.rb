@@ -59,12 +59,12 @@ module TaskHelpers
         tag_category["name"] = tag_category["name"].to_s
         tag_category.delete("parent_id")
 
-        classification = Classification.find_by_name(tag_category['name'], REGION_NUMBER, ns)
+        classification = Classification.lookup_by_name(tag_category['name'], REGION_NUMBER, ns)
 
         entries = tag_category.delete('entries')
 
         if classification
-          classification.update_attributes(tag_category.select { |k| UPDATE_CAT_FIELDS.include?(k) })
+          classification.update(tag_category.select { |k| UPDATE_CAT_FIELDS.include?(k) })
         else
           classification = Classification.is_category.create(tag_category)
         end
@@ -82,7 +82,7 @@ module TaskHelpers
           tag_entry = classification.entries.detect { |ent| ent.description == entry['description'] } if tag_entry.nil?
 
           if tag_entry
-            tag_entry.update_attributes(entry.select { |key| UPDATE_ENTRY_FIELDS.include?(key) })
+            tag_entry.update(entry.select { |key| UPDATE_ENTRY_FIELDS.include?(key) })
           else
             tag_entry = Classification.create(entry.merge('parent_id' => classification.id))
           end

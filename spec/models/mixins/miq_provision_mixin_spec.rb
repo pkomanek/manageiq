@@ -1,4 +1,4 @@
-describe MiqProvisionMixin do
+RSpec.describe MiqProvisionMixin do
   describe "#get_owner" do
     let(:owner) { FactoryBot.create(:user_with_email) }
     let(:options) { {:owner_email => owner.email} }
@@ -50,7 +50,7 @@ describe MiqProvisionMixin do
 
     describe ".current_group" do
       before do
-        owner.update_attributes(:current_group => my_group,
+        owner.update(:current_group => my_group,
                                 :miq_groups    => [my_group, my_alt_group])
       end
       let(:my_group) { FactoryBot.create(:miq_group) }

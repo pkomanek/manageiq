@@ -1,4 +1,4 @@
-describe MiqAeField do
+RSpec.describe MiqAeField do
   describe "#to_export_xml" do
     let(:default_value) { nil }
     let(:miq_ae_field) do
@@ -43,6 +43,13 @@ describe MiqAeField do
     before do
       @c1 = MiqAeClass.create(:namespace => "TEST", :name => "fields_test")
       @user = FactoryBot.create(:user_with_group)
+    end
+
+    it "looks up by name" do
+      field_name = "TEST"
+      field = @c1.ae_fields.create(:name => field_name)
+
+      expect(MiqAeField.lookup_by_name(field_name)).to eq(field)
     end
 
     it "should enforce necessary parameters upon create" do

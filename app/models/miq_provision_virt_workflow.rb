@@ -212,7 +212,7 @@ class MiqProvisionVirtWorkflow < MiqProvisionWorkflow
   def allowed_cat_entries(options)
     rails_logger('allowed_cat_entries', 0)
     @values["#{options[:prov_field_name]}_category".to_sym] = options[:category]
-    cat = Classification.find_by_name(options[:category].to_s)
+    cat = Classification.lookup_by_name(options[:category].to_s)
     result = cat ? cat.entries.each_with_object({}) { |e, h| h[e.name] = e.description } : {}
     rails_logger('allowed_cat_entries', 1)
     result
@@ -340,7 +340,7 @@ class MiqProvisionVirtWorkflow < MiqProvisionWorkflow
     end
 
     # Only select the colums we need
-    vms = vms.select(:id, :name, :guid, :uid_ems, :ems_id, :cloud_tenant_id)
+    vms = vms.select(:id, :type, :name, :guid, :uid_ems, :ems_id, :cloud_tenant_id)
 
     allowed_templates_list = source_vm_rbac_filter(vms, condition, VM_OR_TEMPLATE_EXTRA_COLS).to_a
     @allowed_templates_filter = filter_id

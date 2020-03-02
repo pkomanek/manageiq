@@ -1,4 +1,4 @@
-describe PglogicalSubscription do
+RSpec.describe PglogicalSubscription do
   let(:remote_region1) { ApplicationRecord.my_region_number + 1 }
   let(:remote_region2) { ApplicationRecord.my_region_number + 2 }
   let(:remote_region3) { ApplicationRecord.my_region_number + 3 }
@@ -171,17 +171,17 @@ describe PglogicalSubscription do
     end
   end
 
-  describe ".find_by_id" do
+  describe ".lookup_by_id" do
     it "returns the specified record with records" do
       with_records
       expected = expected_attrs.first
-      rec = described_class.find_by_id(expected["id"])
+      rec = described_class.lookup_by_id(expected["id"])
       expect(rec.attributes).to eq(expected)
     end
 
     it "returns nil without records" do
       with_no_records
-      expect(described_class.find_by_id("some_subscription")).to be_nil
+      expect(described_class.lookup_by_id("some_subscription")).to be_nil
     end
   end
 
@@ -466,6 +466,13 @@ describe PglogicalSubscription do
     it "returns nil if error raised inside" do
       expect(MiqRegionRemote).to receive(:with_remote_connection).and_raise(PG::Error)
 
+      expect(described_class.first.backlog).to be nil
+    end
+
+    it 'does not attempt to calculate backlog and returns nil unless subscription status is "replicating"' do
+      allow(described_class).to receive(:subscription_status).and_return("down")
+
+      expect(remote_connection).not_to receive(:xlog_location)
       expect(described_class.first.backlog).to be nil
     end
   end

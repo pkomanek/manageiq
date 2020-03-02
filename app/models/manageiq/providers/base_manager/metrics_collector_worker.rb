@@ -15,7 +15,7 @@ class ManageIQ::Providers::BaseManager::MetricsCollectorWorker < MiqQueueWorkerB
     @normalized_type ||= "ems_metrics_collector_worker"
   end
 
-  def self.ems_class
-    parent
+  def self.kill_priority
+    MiqWorkerType::KILL_PRIORITY_METRICS_COLLECTOR_WORKERS
   end
 end

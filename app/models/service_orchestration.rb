@@ -27,17 +27,17 @@ class ServiceOrchestration < Service
   end
 
   def deploy_orchestration_stack
-    deploy_stack_options = stack_options
     job_options = {
-      :create_options            => deploy_stack_options,
+      :create_options            => stack_options,
       :orchestration_manager_id  => orchestration_manager.id,
       :orchestration_template_id => orchestration_template.id,
       :stack_name                => stack_name,
       :zone                      => my_zone
     }
+    job_options[:execution_ttl] = service_timeout(stack_options, 'provision')
 
     @deploy_stack_job = ManageIQ::Providers::CloudManager::OrchestrationTemplateRunner.create_job(job_options)
-    update_attributes(:options => options.merge(:deploy_stack_job_id => @deploy_stack_job.id))
+    update(:options => options.merge(:deploy_stack_job_id => @deploy_stack_job.id))
     @deploy_stack_job.signal(:start)
 
     wait_on_orchestration_stack
@@ -55,9 +55,11 @@ class ServiceOrchestration < Service
       :update_options            => update_options,
       :zone                      => my_zone
     }
+    job_options[:execution_ttl] = service_timeout(update_options, 'reconfigure')
+
     @update_stack_job = ManageIQ::Providers::CloudManager::OrchestrationTemplateRunner.create_job(job_options)
-    update_attributes(:options => options.merge(:update_stack_job_id => @update_stack_job.id))
-    @update_stack_job.signal(:update)
+    update(:options => options.merge(:update_stack_job_id => @update_stack_job.id))
+    @update_stack_job.signal(:reconfigure)
   end
 
   def orchestration_stack
@@ -129,12 +131,12 @@ class ServiceOrchestration < Service
   def link_orchestration_template
     # some orchestration stacks do not have associations with their templates in their provider, we can link them here
     return if orchestration_stack.nil? || orchestration_stack.orchestration_template
-    orchestration_stack.update_attributes(:orchestration_template => orchestration_template)
+    orchestration_stack.update(:orchestration_template => orchestration_template)
   end
 
   def assign_vms_owner
     all_vms.each do |vm|
-      vm.update_attributes(:evm_owner_id => evm_owner_id, :miq_group_id => miq_group_id)
+      vm.update(:evm_owner_id => evm_owner_id, :miq_group_id => miq_group_id)
     end
   end
 
@@ -192,6 +194,8 @@ class ServiceOrchestration < Service
 
   def wait_on_orchestration_stack
     while deploy_stack_job.orchestration_stack.blank?
+      raise _("Orchestration template runner finished with error. Check evm.log for details.") if deploy_stack_job.status == 'error'
+
       _log.info("Waiting for the deployment of orchestration stack [#{stack_name}]...")
       sleep 2
       # Code running with Rails QueryCache enabled,
@@ -200,5 +204,9 @@ class ServiceOrchestration < Service
       deploy_stack_job.class.uncached { deploy_stack_job.reload }
     end
     @orchestration_stack = deploy_stack_job.orchestration_stack
+  end
+
+  def service_timeout(hash, action)
+    hash[:execution_ttl] || options[:execution_ttl] || options[automate_timeout_key(action)]
   end
 end

@@ -151,8 +151,7 @@ class MiqWidget < ApplicationRecord
   end
 
   def generate_content_complete!
-    self.last_generated_content_on = Time.now.utc
-    self.save!
+    self.update!(:last_generated_content_on => Time.now.utc)
   end
 
   def generate_content_complete_message
@@ -206,13 +205,14 @@ class MiqWidget < ApplicationRecord
       unless MiqTask.exists?(:name   => "Generate Widget: '#{title}'",
                              :userid => User.current_userid || 'system',
                              :state  => %w(Queued Active))
-        create_task(group_hash.length)
+        task = create_task(group_hash.length)
 
         _log.info("#{log_prefix} Queueing Content Generation")
         group_hash.each do |g, u|
           options = generate_content_options(g, u)
           queue_generate_content_for_users_or_group(*options)
         end
+        task.id
       end
     end
   end
@@ -241,10 +241,7 @@ class MiqWidget < ApplicationRecord
 
       data = content_type_klass.new(:report => report, :resource => resource, :timezone => timezone, :widget_options => options).generate(group)
       content = find_or_build_contents_for_user(group, nil, timezone)
-      content.miq_report_result = miq_report_result
-      content.contents = data
-      content.miq_group_id = group.id
-      content.save!
+      content.update!(:miq_report_result => miq_report_result, :contents => data, :miq_group_id => group.id)
     rescue => error
       _log.error("#{log_prefix} Failed for [#{group.class}] [#{group.name}] with error: [#{error.class.name}] [#{error}]")
       _log.log_backtrace(error)
@@ -286,11 +283,7 @@ class MiqWidget < ApplicationRecord
 
       data = content_type_klass.new(:report => report, :resource => resource, :timezone => timezone, :widget_options => options).generate(user)
       content = find_or_build_contents_for_user(group, user, timezone)
-      content.miq_report_result = miq_report_result
-      content.contents = data
-      content.user_id      = user.id
-      content.miq_group_id = group.id
-      content.save!
+      content.update!(:miq_report_result => miq_report_result, :contents => data, :miq_group_id => group.id, :user_id => user.id)
     rescue => error
       _log.error("#{log_prefix} Failed for [#{user.class}] [#{user.name}] with error: [#{error.class.name}] [#{error}]")
       _log.log_backtrace(error)
@@ -327,9 +320,7 @@ class MiqWidget < ApplicationRecord
     settings_for_build[:user_id]  = user.id  if user
     settings_for_build[:timezone] = timezone if timezone
     contents = miq_widget_contents.find_by(settings_for_build) || miq_widget_contents.build(settings_for_build)
-    contents.updated_at = Time.now.utc # Force updated timestamp to change when saved even if the new contents are the same
-
-    contents
+    contents.tap { |c| c.update!(:updated_at => Time.now.utc) }
   end
 
   # TODO: group/user support

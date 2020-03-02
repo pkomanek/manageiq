@@ -54,7 +54,7 @@ module MiqServer::LogManagement
 
     # the current queue item and task must be errored out on exceptions so re-raise any caught errors
     raise _("Log depot settings not configured") unless context_log_depot
-    context_log_depot.update_attributes(:support_case => options[:support_case].presence)
+    context_log_depot.update(:support_case => options[:support_case].presence)
 
     if include_automate_models_and_dialogs?(options[:include_automate_models_and_dialogs])
       post_automate_models(taskid, context_log_depot)
@@ -109,7 +109,12 @@ module MiqServer::LogManagement
     task = logfile.miq_task
     log_prefix = "Task: [#{task.id}]"
 
-    log_start, log_end = log_start_and_end_for_pattern(pattern)
+    log_start, log_end = if logfile.logging_started_on
+                           [logfile.logging_started_on, logfile.logging_ended_on]
+                         else
+                           log_start_and_end_for_pattern(pattern)
+                         end
+
     date_string = "#{format_log_time(log_start)} #{format_log_time(log_end)}" unless log_start.nil? && log_end.nil?
 
     msg = "Zipping and posting #{log_type.downcase} logs for [#{who_am_i}] from: [#{log_start}] to [#{log_end}]"
@@ -120,7 +125,7 @@ module MiqServer::LogManagement
       local_file = VMDB::Util.zip_logs(log_type.to_s.downcase.concat(".zip"), log_patterns(log_type, pattern), "system")
       self.log_files << logfile
 
-      logfile.update_attributes(
+      logfile.update(
         :local_file         => local_file,
         :logging_started_on => log_start,
         :logging_ended_on   => log_end,
@@ -131,7 +136,8 @@ module MiqServer::LogManagement
       logfile.upload
     rescue StandardError, Timeout::Error => err
       _log.error("#{log_prefix} Posting of #{log_type.downcase} logs failed for #{who_am_i} due to error: [#{err.class.name}] [#{err}]")
-      logfile.update_attributes(:state => "error")
+      task.update_status("Finished", "Error", "Posting of #{log_type.downcase} logs failed for #{who_am_i} due to error: [#{err.class.name}] [#{err}]")
+      logfile.update(:state => "error")
       raise
     ensure
       FileUtils.rm_f(local_file) if local_file && File.exist?(local_file)
@@ -144,9 +150,13 @@ module MiqServer::LogManagement
   def post_automate_models(taskid, log_depot)
     domain_zip = Rails.root.join("log", "domain.zip")
     backup_automate_models(domain_zip)
+    now = Time.zone.now
 
     logfile = LogFile.historical_logfile
-    logfile.update(:file_depot => log_depot, :miq_task => MiqTask.find(taskid))
+    logfile.update(:file_depot         => log_depot,
+                   :miq_task           => MiqTask.find(taskid),
+                   :logging_started_on => now,
+                   :logging_ended_on   => now)
     post_one_log_pattern(domain_zip, logfile, "Models")
   ensure
     FileUtils.rm_rf(domain_zip)
@@ -162,9 +172,13 @@ module MiqServer::LogManagement
     dialog_directory = Rails.root.join("log", "service_dialogs")
     FileUtils.mkdir_p(dialog_directory)
     backup_automate_dialogs(dialog_directory)
+    now = Time.zone.now
 
     logfile = LogFile.historical_logfile
-    logfile.update(:file_depot => log_depot, :miq_task => MiqTask.find(taskid))
+    logfile.update(:file_depot         => log_depot,
+                   :miq_task           => MiqTask.find(taskid),
+                   :logging_started_on => now,
+                   :logging_ended_on   => now)
     post_one_log_pattern(dialog_directory.join("*"), logfile, "Dialogs")
   ensure
     FileUtils.rm_rf(dialog_directory)
@@ -230,14 +244,14 @@ module MiqServer::LogManagement
     log_files.each do |lf|
       if lf.state == 'collecting'
         _log.info("Deleting #{lf.description}")
-        lf.miq_task.update_attributes(:state => 'Finished', :status => 'Error', :message => 'Log Collection Incomplete during Server Startup') unless lf.miq_task.nil?
+        lf.miq_task&.(:state => 'Finished', :status => 'Error', :message => 'Log Collection Incomplete during Server Startup')
         lf.destroy
       end
     end
 
     # Since a task is created before a logfile, there's a chance we have a task without a logfile
     MiqTask.where(:miq_server_id => id).where("name like ?", "Zipped log retrieval for %").where("state != ?", "Finished").each do |task|
-      task.update_attributes(:state => 'Finished', :status => 'Error', :message => 'Log Collection Incomplete during Server Startup')
+      task.update(:state => 'Finished', :status => 'Error', :message => 'Log Collection Incomplete during Server Startup')
     end
   end
 

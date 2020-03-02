@@ -25,16 +25,10 @@ module Vmdb
     RESET_COMMAND = "<<reset>>".freeze
     RESET_VALUE = HashDiffer::MissingKey
 
-    cattr_accessor :last_loaded
-
     def self.init
       ::Config.overwrite_arrays = true
+      ::Config.merge_nil_values = false
       reset_settings_constant(for_resource(:my_server))
-      on_reload
-    end
-
-    def self.on_reload
-      self.last_loaded = Time.now.utc
       dump_to_log_directory(::Settings)
     end
 
@@ -113,6 +107,16 @@ module Vmdb
       DUMP_LOG_FILE.write(mask_passwords!(settings.to_hash).to_yaml)
     end
 
+    # This is a near copy of Config.load_and_set_settings, but we can't use that
+    # method as it also calls Config.load_files, which enforces specific file
+    # sources and doesn't allow you insert new sources into the middle of the
+    # stack.
+    def self.reset_settings_constant(settings)
+      name = ::Config.const_name
+      Object.send(:remove_const, name) if Object.const_defined?(name)
+      Object.const_set(name, settings)
+    end
+
     def self.build_template
       ::Config::Options.new.tap do |settings|
         template_sources.each { |s| settings.add_source!(s) }
@@ -177,16 +181,6 @@ module Vmdb
     end
     private_class_method :local_sources
 
-    # This is a near copy of Config.load_and_set_settings, but we can't use that
-    # method as it also calls Config.load_files, which enforces specific file
-    # sources and doesn't allow you insert new sources into the middle of the
-    # stack.
-    def self.reset_settings_constant(settings)
-      Kernel.send(:remove_const, ::Config.const_name) if Kernel.const_defined?(::Config.const_name)
-      Kernel.const_set(::Config.const_name, settings)
-    end
-    private_class_method :reset_settings_constant
-
     def self.replace_magic_values!(settings, resource)
       parent_settings = nil
 
@@ -206,7 +200,7 @@ module Vmdb
         deltas.each do |delta|
           record = index.delete(delta[:key])
           if record
-            record.update_attributes!(delta)
+            record.update!(delta)
           else
             resource.settings_changes.create!(delta)
           end

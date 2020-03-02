@@ -22,13 +22,16 @@ class Zone < ApplicationRecord
   has_many :miq_templates,         :through => :ext_management_systems
   has_many :ems_clusters,          :through => :ext_management_systems
   has_many :physical_servers,      :through => :ext_management_systems
+  has_many :storages,              :through => :ext_management_systems
   has_many :container_nodes,       :through => :container_managers
   has_many :container_groups,      :through => :container_managers
   has_many :container_replicators, :through => :container_managers
   has_many :containers,            :through => :container_managers
   virtual_has_many :active_miq_servers, :class_name => "MiqServer"
 
+  before_destroy :remove_servers_if_podified
   before_destroy :check_zone_in_use_on_destroy
+  after_create :create_server_if_podified
 
   include AuthenticationMixin
 
@@ -62,7 +65,7 @@ class Zone < ApplicationRecord
                      :visible     => false)
 
       # 2) Assign to MiqRegion
-      MiqRegion.my_region.update_attributes(:maintenance_zone => zone)
+      MiqRegion.my_region.update(:maintenance_zone => zone)
     rescue ActiveRecord::RecordInvalid
       raise if zone.errors[:name].blank?
       retry
@@ -112,7 +115,7 @@ class Zone < ApplicationRecord
   end
 
   def remote_cockpit_ws_miq_server
-    role_active?("cockpit_ws") ? miq_servers.find_by(:has_active_cockpit_ws => true) : nil
+    miq_servers.find_by(:has_active_cockpit_ws => true) if role_active?("cockpit_ws")
   end
 
   # The zone to use when inserting a record into MiqQueue
@@ -194,6 +197,11 @@ class Zone < ApplicationRecord
     ext_management_systems.select { |e| e.kind_of?(EmsCloud) }
   end
 
+  # @return [Array<ExtManagementSystem>] All emses that can collect Capacity and Utilization metrics
+  def ems_metrics_collectable
+    ext_management_systems.select { |e| e.kind_of?(EmsCloud) || e.kind_of?(EmsInfra) || e.kind_of?(ManageIQ::Providers::ContainerManager) }
+  end
+
   def ems_networks
     ext_management_systems.select { |e| e.kind_of?(ManageIQ::Providers::NetworkManager) }
   end
@@ -205,11 +213,6 @@ class Zone < ApplicationRecord
 
   def self.vms_without_a_zone
     Vm.where(:ems_id => nil).to_a
-  end
-
-  def storages
-    MiqPreloader.preload(self, :ext_management_systems => {:hosts => :storages})
-    ext_management_systems.flat_map(&:storages).uniq
   end
 
   def self.storages_without_a_zone
@@ -238,11 +241,30 @@ class Zone < ApplicationRecord
     servers.each(&:ntp_reload_queue)
   end
 
+  def message_for_invalid_delete
+    return _("cannot delete default zone") if name == "default"
+    return _("cannot delete maintenance zone") if self == self.class.maintenance_zone
+    return _("zone name '%{name}' is used by a server") % {:name => name} if !MiqEnvironment::Command.is_podified? && miq_servers.present?
+    _("zone name '%{name}' is used by a provider") % {:name => name} if ext_management_systems.present?
+  end
+
   protected
 
+  def remove_servers_if_podified
+    return unless MiqEnvironment::Command.is_podified?
+
+    miq_servers.destroy_all
+  end
+
+  def create_server_if_podified
+    return unless MiqEnvironment::Command.is_podified?
+    return if name == "default" || !visible
+
+    miq_servers.create!(:name => name)
+  end
+
   def check_zone_in_use_on_destroy
-    raise _("cannot delete default zone") if name == "default"
-    raise _("cannot delete maintenance zone") if self == miq_region.maintenance_zone
-    raise _("zone name '%{name}' is used by a server") % {:name => name} unless miq_servers.blank?
+    msg = message_for_invalid_delete
+    raise msg if msg
   end
 end

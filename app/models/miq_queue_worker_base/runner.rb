@@ -15,7 +15,7 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
   end
 
   def dequeue_method_via_drb?
-    @dequeue_method == :drb
+    @dequeue_method == :drb && drb_dequeue_available?
   end
 
   def thresholds_exceeded?
@@ -57,7 +57,7 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
       next if msg.task_id && MiqQueue.exists?(:state => MiqQueue::STATE_DEQUEUE, :zone => [nil, MiqServer.my_zone], :task_id => msg.task_id)
 
       begin
-        msg.update_attributes!(:state => MiqQueue::STATE_DEQUEUE, :handler => @worker)
+        msg.update!(:state => MiqQueue::STATE_DEQUEUE, :handler => @worker)
         _log.info("#{MiqQueue.format_full_log_msg(msg)}, Dequeued in: [#{Time.now - msg.created_on}] seconds")
         return msg
       rescue ActiveRecord::StaleObjectError
@@ -74,11 +74,10 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
     loop do
       msg = MiqQueue.get(
         :queue_name => @worker.queue_name,
-        :role       => @active_roles,
+        :role       => @worker.required_roles.presence,
         :priority   => @worker.class.queue_priority
       )
       return msg unless msg == :stale
-      heartbeat
     end
   end
 
@@ -90,18 +89,14 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
     end
   end
 
-  def message_delivery_suspended?
-    self.class.delay_queue_delivery_for_vim_broker? && !MiqVimBrokerWorker.available?
-  end
-
-  def deliver_queue_message(msg)
+  def deliver_queue_message(msg, &block)
     reset_poll_escalate if poll_method == :sleep_poll_escalate
 
     begin
       $_miq_worker_current_msg = msg
       Thread.current[:tracking_label] = msg.tracking_label || msg.task_id
       heartbeat_message_timeout(msg)
-      status, message, result = msg.deliver
+      status, message, result = msg.deliver(&block)
 
       if status == MiqQueue::STATUS_TIMEOUT
         begin
@@ -118,18 +113,9 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
 
       msg.delivered(status, message, result) unless status == MiqQueue::STATUS_RETRY
       do_exit("Exiting worker due to timeout error", 1) if status == MiqQueue::STATUS_TIMEOUT
-    rescue MiqException::MiqVimBrokerUnavailable
-      _log.error("#{log_prefix} VimBrokerWorker is not available.  Requeueing message...")
-      msg.unget
     ensure
       $_miq_worker_current_msg = nil # to avoid log messages inadvertantly prefixed by previous task_id
       Thread.current[:tracking_label] = nil
-      #
-      # This tells the broker to release any memory being held on behalf of this process
-      # and reset the global broker handle ($vim_broker_client).
-      # This is a NOOP if global broker handle is not set.
-      #
-      clean_broker_connection
     end
   end
 
@@ -144,12 +130,13 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
   end
 
   def do_work
+    register_worker_with_worker_monitor if dequeue_method_via_drb?
+
     # Keep collecting messages from the queue until the queue is empty,
     #   so we don't sleep in between messages
     loop do
       heartbeat
       break if thresholds_exceeded?
-      break if message_delivery_suspended?
       msg = get_message
       break if msg.nil?
       deliver_message(msg)
@@ -158,9 +145,24 @@ class MiqQueueWorkerBase::Runner < MiqWorker::Runner
 
   private
 
+  def register_worker_with_worker_monitor
+    worker_monitor_drb.register_worker(@worker.pid, @worker.class.name, @worker.queue_name)
+  rescue DRb::DRbError => err
+    do_exit("Failed to register worker with worker monitor: #{err.class.name}: #{err.message}", 1)
+  end
+
+  def drb_dequeue_available?
+    @drb_dequeue_available ||=
+      begin
+        server.drb_uri.present? && worker_monitor_drb.respond_to?(:register_worker)
+      rescue DRb::DRbError
+        false
+      end
+  end
+
   # Only for file based heartbeating
   def heartbeat_message_timeout(message)
-    if ENV["WORKER_HEARTBEAT_METHOD"] == "file" && message.msg_timeout
+    if message.msg_timeout
       timeout = worker_settings[:poll] + message.msg_timeout
       heartbeat_to_file(timeout)
     end

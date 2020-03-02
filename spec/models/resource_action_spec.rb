@@ -1,4 +1,4 @@
-describe ResourceAction do
+RSpec.describe ResourceAction do
   context "#deliver_to_automate_from_dialog" do
     let(:user) { FactoryBot.create(:user_with_group) }
     let(:zone_name) { "default" }
@@ -109,17 +109,16 @@ describe ResourceAction do
   end
 
   context "#automate_queue_hash" do
-    let(:button) { FactoryBot.create(:custom_button, :options => {:open_url => true}, :applies_to_class => "Vm") }
+    let(:button) { FactoryBot.create(:custom_button, :applies_to_class => "Vm") }
     let(:ra)     { FactoryBot.create(:resource_action, :resource => button) }
     let(:user)   { FactoryBot.create(:user_with_group) }
     let(:target) { FactoryBot.create(:vm_vmware) }
 
-    it "adds result_format for open_url" do
-      expect(ra.automate_queue_hash(target, {}, user)).to include(:attrs => {"result_format"=>"ignore"})
+    it "passes result_format" do
+      expect(ra.automate_queue_hash(target, {"result_format"=>"ignore"}, user)).to include(:attrs => {"result_format"=>"ignore"})
     end
 
-    it "does not add result_format for not open_url" do
-      button.options[:open_url] = false
+    it "does not pass result_format by default" do
       expect(ra.automate_queue_hash(target, {}, user)).not_to include(:attrs => {"result_format"=>"ignore"})
     end
   end

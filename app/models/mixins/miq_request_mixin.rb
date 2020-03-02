@@ -17,7 +17,7 @@ module MiqRequestMixin
     msg = msg.truncate(255)
     options[:user_message] = msg
     update_attribute(:options, options)
-    update_attributes(:message => msg) unless msg.blank?
+    update(:message => msg) if msg.present?
   end
 
   def self.get_option_last(key, from)
@@ -85,7 +85,7 @@ module MiqRequestMixin
   end
 
   def add_tag(category, tag_name)
-    cat = Classification.find_by_name(category.to_s)
+    cat = Classification.lookup_by_name(category.to_s)
     return if cat.nil?
     tag = cat.children.detect { |t| t.name.casecmp(tag_name.to_s) == 0 }
     return if tag.nil?
@@ -139,10 +139,10 @@ module MiqRequestMixin
       next unless tag_name.starts_with?(ns)
       tag_path = tag_name.split('/')[2..-1].join('/')
       parts = tag_path.split('/')
-      cat = Classification.find_by_name(parts.first)
+      cat = Classification.lookup_by_name(parts.first)
       next if cat.show? == false
       cat_descript = cat.description
-      tag_descript = Classification.find_by_name(tag_path).description
+      tag_descript = Classification.lookup_by_name(tag_path).description
       ws_tag_data << {:category => parts.first, :category_display_name => cat_descript,
                       :tag_name => parts.last,  :tag_display_name => tag_descript,
                       :tag_path =>  File.join(ns, tag_path), :display_name => "#{cat_descript}: #{tag_descript}"}
@@ -189,6 +189,6 @@ module MiqRequestMixin
     options[:executed_on_servers] ||= []
     # remove duplicates and ensure that last element of array is the last server
     (options[:executed_on_servers] -= [MiqServer.my_server.id]) << MiqServer.my_server.id
-    update_attributes(:options => options)
+    update(:options => options)
   end
 end

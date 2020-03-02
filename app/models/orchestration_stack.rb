@@ -52,8 +52,6 @@ class OrchestrationStack < ApplicationRecord
 
   virtual_column :stdout, :type => :string
 
-  before_validation :set_tenant_from_group
-
   scope :without_type, ->(type) { where.not(:type => type) }
 
   alias_method :orchestration_stack_parameters, :parameters
@@ -99,10 +97,6 @@ class OrchestrationStack < ApplicationRecord
     format.nil? ? try(:raw_stdout) : try(:raw_stdout, format)
   end
 
-  def set_tenant_from_group
-    self.tenant_id = miq_group.tenant_id if miq_group
-  end
-
   private :directs_and_indirects
 
   def self.create_stack(orchestration_manager, stack_name, template, options = {})
@@ -123,22 +117,6 @@ class OrchestrationStack < ApplicationRecord
 
   def my_zone
     ext_management_system.try(:my_zone)
-  end
-
-  def update_stack_queue(userid, template, options = {})
-    task_opts = {
-      :action => "updating Orchestration Stack for user #{userid}",
-      :userid => userid
-    }
-    queue_opts = {
-      :class_name  => self.class.name,
-      :method_name => 'update_stack',
-      :instance_id => id,
-      :role        => 'ems_operations',
-      :zone        => ext_management_system.my_zone,
-      :args        => [template, options]
-    }
-    MiqTask.generic_action_with_callback(task_opts, queue_opts)
   end
 
   def update_stack(template, options = {})

@@ -12,7 +12,7 @@ class ServiceTemplateTransformationPlanTask < ServiceTemplateProvisionTask
   end
 
   def after_request_task_create
-    update_attributes(:description => get_description)
+    update!(:description => get_description)
   end
 
   def resource_action
@@ -31,13 +31,25 @@ class ServiceTemplateTransformationPlanTask < ServiceTemplateProvisionTask
     ServiceTemplate.find_by(:id => vm_resource.options["post_ansible_playbook_service_template_id"])
   end
 
+  def cpu_right_sizing_mode
+    vm_resource.options["cpu_right_sizing_mode"]
+  end
+
+  def memory_right_sizing_mode
+    vm_resource.options["memory_right_sizing_mode"]
+  end
+
+  def warm_migration?
+    vm_resource.options["warm_migration"]
+  end
+
   def update_transformation_progress(progress)
     update_options(:progress => (options[:progress] || {}).merge(progress))
   end
 
   def task_finished
     # update the status of vm transformation status in the plan
-    vm_resource.update_attributes(:status => status == 'Ok' ? ServiceResource::STATUS_COMPLETED : ServiceResource::STATUS_FAILED)
+    vm_resource.update!(:status => status == 'Ok' ? ServiceResource::STATUS_COMPLETED : ServiceResource::STATUS_FAILED)
   end
 
   def mark_vm_migrated
@@ -45,17 +57,25 @@ class ServiceTemplateTransformationPlanTask < ServiceTemplateProvisionTask
   end
 
   def task_active
-    vm_resource.update_attributes(:status => ServiceResource::STATUS_ACTIVE)
+    vm_resource.update!(:status => ServiceResource::STATUS_ACTIVE)
   end
 
   # This method returns true if all mappings are ok. It also preload
   #  virtv2v_disks and network_mappings in task options
   def preflight_check
     raise 'OSP destination and source power_state is off' if destination_ems.emstype == 'openstack' && source.power_state == 'off'
-    update_options(:source_vm_power_state => source.power_state) # This will determine power_state of destination_vm
+    update_options(
+      :source_vm_power_state => source.power_state, # This will determine power_state of destination_vm
+      :source_vm_ipaddresses => source.ipaddresses  # This will determine if we need to wait for ip addresses to appear
+    )
     destination_cluster
     virtv2v_disks
     network_mappings
+
+    host = source.host
+    raise "No credentials configured for '#{host.name}'" if host.missing_credentials?
+    raise "Invalid authentication for '#{host.name}': #{host.default_authentication.status_details}" unless host.authentication_status_ok?
+
     { :status => 'Ok', :message => 'Preflight check is successful' }
   rescue StandardError => error
     { :status => 'Error', :message => error.message }
@@ -161,16 +181,15 @@ class ServiceTemplateTransformationPlanTask < ServiceTemplateProvisionTask
   end
 
   def cancel
-    update_attributes(:cancelation_status => MiqRequestTask::CANCEL_STATUS_REQUESTED)
-    infra_conversion_job.cancel
+    update!(:cancelation_status => MiqRequestTask::CANCEL_STATUS_REQUESTED)
   end
 
   def canceling
-    update_attributes(:cancelation_status => MiqRequestTask::CANCEL_STATUS_PROCESSING)
+    update!(:cancelation_status => MiqRequestTask::CANCEL_STATUS_PROCESSING)
   end
 
   def canceled
-    update_attributes(:cancelation_status => MiqRequestTask::CANCEL_STATUS_FINISHED)
+    update!(:cancelation_status => MiqRequestTask::CANCEL_STATUS_FINISHED)
   end
 
   def conversion_options
@@ -193,7 +212,7 @@ class ServiceTemplateTransformationPlanTask < ServiceTemplateProvisionTask
     with_lock do
       # Automate is updating this options hash (various keys) as well, using with_lock.
       options.merge!(opts)
-      update_attributes(:options => options)
+      update!(:options => options)
     end
     options
   end
@@ -201,7 +220,14 @@ class ServiceTemplateTransformationPlanTask < ServiceTemplateProvisionTask
   def run_conversion
     start_timestamp = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S')
     updates = {}
-    updates[:virtv2v_wrapper] = conversion_host.run_conversion(conversion_options)
+    conversion_host.run_conversion(id, conversion_options)
+    updates[:virtv2v_wrapper] = {
+      "state_file"      => "/var/lib/uci/#{id}/state.json",
+      "throttling_file" => "/var/lib/uci/#{id}/limits.json",
+      "cutover_file"    => "/var/lib/uci/#{id}/cutover",
+      "v2v_log"         => "/var/log/uci/#{id}/virt-v2v.log",
+      "wrapper_log"     => "/var/log/uci/#{id}/virt-v2v-wrapper.log"
+    }
     updates[:virtv2v_started_on] = start_timestamp
     updates[:virtv2v_status] = 'active'
     _log.info("InfraConversionJob run_conversion to update_options: #{updates}")
@@ -210,11 +236,12 @@ class ServiceTemplateTransformationPlanTask < ServiceTemplateProvisionTask
 
   def get_conversion_state
     updates = {}
-    virtv2v_state = conversion_host.get_conversion_state(options[:virtv2v_wrapper]['state_file'])
+    virtv2v_state = conversion_host.get_conversion_state(id)
     updated_disks = virtv2v_disks
     updates[:virtv2v_pid] = virtv2v_state['pid'] if virtv2v_state['pid'].present?
     updates[:virtv2v_message] = virtv2v_state['last_message']['message'] if virtv2v_state['last_message'].present?
     if virtv2v_state['finished'].nil?
+      updates[:virtv2v_status] = 'active'
       updated_disks.each do |disk|
         matching_disks = virtv2v_state['disks'].select { |d| d['path'] == disk[:path] }
         raise "No disk matches '#{disk[:path]}'. Aborting." if matching_disks.length.zero?
@@ -225,16 +252,27 @@ class ServiceTemplateTransformationPlanTask < ServiceTemplateProvisionTask
       updates[:virtv2v_finished_on] = Time.now.utc.strftime('%Y-%m-%d %H:%M:%S')
       if virtv2v_state['failed']
         updates[:virtv2v_status] = 'failed'
-        raise "Disks transformation failed."
-      else
+      elsif !canceling?
         updates[:virtv2v_status] = 'succeeded'
+        updates[:destination_vm_uuid] = virtv2v_state['vm_id']
         updated_disks.each { |d| d[:percent] = 100 }
       end
     end
     updates[:virtv2v_disks] = updated_disks
+    update_options(:get_conversion_state_failures => 0)
+  rescue
+    failures = options[:get_conversion_state_failures] || 0
+    update_options(:get_conversion_state_failures => failures + 1)
+    raise "Failed to get conversion state 5 times in a row" if options[:get_conversion_state_failures] > 5
   ensure
     _log.info("InfraConversionJob get_conversion_state to update_options: #{updates}")
     update_options(updates)
+  end
+
+  def cutover
+    unless conversion_host.create_cutover_file(id)
+      raise _("Couldn't create cutover file for #{source.name} on #{conversion_host.name}")
+    end
   end
 
   def kill_virtv2v(signal = 'TERM')
@@ -245,23 +283,22 @@ class ServiceTemplateTransformationPlanTask < ServiceTemplateProvisionTask
       return false
     end
 
-    unless options[:virtv2v_pid]
-      _log.info("No PID has been reported by virt-v2v-wrapper, so we can't kill it.")
-      return false
-    end
+    _log.info("Killing conversion pod for task '#{id}'.")
+    conversion_host.kill_virtv2v(id, signal)
+  rescue => err
+    _log.error("Couldn't kill conversion pod for task '#{id}': #{err.message}")
+    update_options(:virtv2v_finished_on => Time.now.utc.strftime('%Y-%m-%d %H:%M:%S'))
+    false
+  end
 
-    _log.info("Killing virt-v2v (PID: #{options[:virtv2v_pid]}) with #{signal} signal.")
-    conversion_host.kill_process(options[:virtv2v_pid], signal)
+  def virtv2v_running?
+    options[:virtv2v_started_on].present? && options[:virtv2v_finished_on].blank? && options[:virtv2v_wrapper].present?
   end
 
   private
 
   def vm_resource
     miq_request.vm_resources.find_by(:resource => source)
-  end
-
-  def virtv2v_running?
-    options[:virtv2v_started_on].present? && options[:virtv2v_finished_on].blank? && options[:virtv2v_wrapper].present?
   end
 
   def create_error_status_task(userid, msg)
@@ -304,29 +341,37 @@ class ServiceTemplateTransformationPlanTask < ServiceTemplateProvisionTask
 
   def conversion_options_source_provider_vmwarews_vddk(_storage)
     {
-      :vm_name            => source.name,
-      :transport_method   => 'vddk',
-      :vmware_fingerprint => source.host.thumbprint_sha1,
-      :vmware_uri         => URI::Generic.build(
+      :vm_name              => source.name,
+      :vm_uuid              => source.uid_ems,
+      :conversion_host_uuid => conversion_host.resource.ems_ref,
+      :transport_method     => 'vddk',
+      :vmware_fingerprint   => source.host.thumbprint_sha1,
+      :vmware_uri           => URI::Generic.build(
         :scheme   => 'esx',
         :userinfo => CGI.escape(source.host.authentication_userid),
         :host     => source.host.ipaddress,
         :path     => '/',
         :query    => { :no_verify => 1 }.to_query
       ).to_s,
-      :vmware_password    => source.host.authentication_password
+      :vmware_password      => source.host.authentication_password,
+      :two_phase            => warm_migration?,
+      :warm                 => warm_migration?,
+      :daemonize            => false
     }
   end
 
   def conversion_options_source_provider_vmwarews_ssh(storage)
     {
-      :vm_name          => URI::Generic.build(
+      :vm_name              => URI::Generic.build(
         :scheme   => 'ssh',
         :userinfo => 'root',
         :host     => source.host.ipaddress,
         :path     => "/vmfs/volumes/#{Addressable::URI.escape(storage.name)}/#{Addressable::URI.escape(source.location)}"
       ).to_s,
-      :transport_method => 'ssh'
+      :vm_uuid              => source.uid_ems,
+      :conversion_host_uuid => conversion_host.resource.ems_ref,
+      :transport_method     => 'ssh',
+      :daemonize            => false
     }
   end
 

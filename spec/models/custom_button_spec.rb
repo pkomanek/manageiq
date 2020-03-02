@@ -1,4 +1,4 @@
-describe CustomButton do
+RSpec.describe CustomButton do
   describe '.with_array_order' do
     context 'order by array' do
       let!(:custom_button_1) { FactoryBot.create(:custom_button, :name => 'AAA', :applies_to_id => 100, :applies_to_class => Vm) }
@@ -310,7 +310,7 @@ describe CustomButton do
     service_template1 = FactoryBot.create(:service_template)
     service_template2 = FactoryBot.create(:service_template)
     button = FactoryBot.create(:custom_button, :applies_to => service_template1)
-    expect { button.copy(:applies_to => service_template2) }.to change { CustomButton.count }.by(1)
+    expect { button.copy(:applies_to => service_template2) }.to(change { CustomButton.count }.by(1))
   end
 
   describe "publish custom button event" do

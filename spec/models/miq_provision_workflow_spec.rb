@@ -1,6 +1,6 @@
 silence_warnings { MiqProvisionWorkflow.const_set("DIALOGS_VIA_AUTOMATE", false) }
 
-describe MiqProvisionWorkflow do
+RSpec.describe MiqProvisionWorkflow do
   let(:admin) { FactoryBot.create(:user_admin) }
   let(:server) { EvmSpecHelper.local_miq_server }
   let(:dialog) { FactoryBot.create(:miq_dialog_provision) }
@@ -43,7 +43,7 @@ describe MiqProvisionWorkflow do
             "1.0", admin, "template", "target", false, "cc|001|environment|test", "")
           expect(request).to be_a_kind_of(MiqRequest)
 
-          expect(request.options[:vm_tags]).to eq([Classification.find_by_name("cc/001").id])
+          expect(request.options[:vm_tags]).to eq([Classification.lookup_by_name("cc/001").id])
         end
 
         it "should set tags" do
@@ -53,7 +53,7 @@ describe MiqProvisionWorkflow do
             {'cc' => '001', 'environment' => 'test'}, nil, nil, nil)
           expect(request).to be_a_kind_of(MiqRequest)
 
-          expect(request.options[:vm_tags]).to eq([Classification.find_by_name("cc/001").id])
+          expect(request.options[:vm_tags]).to eq([Classification.lookup_by_name("cc/001").id])
         end
 
         it "should encrypt fields" do
@@ -110,7 +110,7 @@ describe MiqProvisionWorkflow do
     let(:workflow_class) { provider.class.provision_workflow_class }
 
     it 'with valid source' do
-      template.update_attributes(:ext_management_system => provider)
+      template.update(:ext_management_system => provider)
       expect(described_class.class_for_source(template.id)).to eq(workflow_class)
     end
 

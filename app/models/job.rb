@@ -16,10 +16,9 @@ class Job < ApplicationRecord
   DEFAULT_TIMEOUT = 300
   DEFAULT_USERID  = 'system'.freeze
 
-  def self.create_job(process_type, options = {})
-    klass = Object.const_get(process_type)
+  def self.create_job(options = {})
     ar_options = options.dup.delete_if { |k, _v| !Job.column_names.include?(k.to_s) }
-    job = klass.new(ar_options)
+    job = new(ar_options)
     job.options = options
     job.initialize_attributes
     job.save
@@ -36,7 +35,7 @@ class Job < ApplicationRecord
   delegate :current_job_timeout, :to => :class
 
   def update_linked_task
-    miq_task.update_attributes!(attributes_for_task) unless miq_task.nil?
+    miq_task&.update!(attributes_for_task)
   end
 
   def initialize_attributes

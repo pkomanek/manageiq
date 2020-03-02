@@ -5,6 +5,7 @@ FactoryBot.define do
 
   factory :storage_vmware, :parent => :storage do
     store_type { "VMFS" }
+    sequence(:ems_ref) { |n| "datastore-#{n}" }
   end
 
   factory :storage_nfs, :parent => :storage do
@@ -12,7 +13,7 @@ FactoryBot.define do
   end
 
   factory :storage_redhat, :parent => :storage_nfs do
-    sequence(:ems_ref_obj) { |n| "/api/storagedomains/#{n}" }
+    sequence(:ems_ref)             { |n| "/api/storagedomains/#{n}" }
     sequence(:storage_domain_type) { |n| n == 2 ? "iso" : "data" }
   end
 
@@ -22,12 +23,5 @@ FactoryBot.define do
 
   factory :storage_unknown, :parent => :storage do
     store_type { "UNKNOWN" }
-  end
-
-  # Factories for perf_capture_timer and perf_capture_gap testing
-  factory :storage_target_vmware, :parent => :storage_vmware do
-    after(:create) do |x|
-      x.perf_capture_enabled = toggle_on_name_seq(x)
-    end
   end
 end

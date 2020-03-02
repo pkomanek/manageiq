@@ -60,7 +60,7 @@ class ServiceTemplate < ApplicationRecord
 
   belongs_to :service_template_catalog
   belongs_to :zone
-  belongs_to :currency, :class_name => "ChargebackRateDetailCurrency", :inverse_of => false
+  belongs_to :currency, :inverse_of => false
 
   has_many   :dialogs, -> { distinct }, :through => :resource_actions
   has_many   :miq_schedules, :as => :resource, :dependent => :destroy
@@ -100,7 +100,7 @@ class ServiceTemplate < ApplicationRecord
   end
 
   def self.with_additional_tenants
-    includes(:service_template_tenants => :tenant)
+    references(table_name, :tenants).includes(:service_template_tenants => :tenant)
   end
 
   def self.catalog_item_types
@@ -140,7 +140,7 @@ class ServiceTemplate < ApplicationRecord
   def update_catalog_item(options, auth_user = nil)
     config_info = validate_update_config_info(options)
     unless config_info
-      update_attributes!(options)
+      update!(options)
       return reload
     end
     transaction do
@@ -205,14 +205,18 @@ class ServiceTemplate < ApplicationRecord
 
   def create_service(service_task, parent_svc = nil)
     nh = attributes.dup
+
+    # Service#display was renamed to #visible in https://github.com/ManageIQ/manageiq-schema/pull/410
+    nh['visible'] = nh.delete('display') if nh.key?('display')
+
     nh['options'][:dialog] = service_task.options[:dialog]
     (nh.keys - Service.column_names + %w(created_at guid service_template_id updated_at id type prov_type)).each { |key| nh.delete(key) }
 
     # Hide child services by default
-    nh['display'] = false if parent_svc
+    nh['visible'] = false if parent_svc
 
-    # If display is nil, set it to false
-    nh['display'] ||= false
+    # If visible is nil, set it to false
+    nh['visible'] ||= false
 
     # convert template class name to service class name by naming convention
     nh['type'] = self.class.name.sub('Template', '')
@@ -370,7 +374,7 @@ class ServiceTemplate < ApplicationRecord
       if resource_params
         # And the resource action exists on the template already, update it
         if resource_action
-          resource_action.update_attributes!(resource_params.slice(*RESOURCE_ACTION_UPDATE_ATTRS))
+          resource_action.update!(resource_params.slice(*RESOURCE_ACTION_UPDATE_ATTRS))
         # If the resource action does not exist, create it
         else
           build_resource_action(resource_params, action)
@@ -526,7 +530,7 @@ class ServiceTemplate < ApplicationRecord
 
   def update_from_options(params)
     options[:config_info] = params[:config_info]
-    update_attributes!(params.except(:config_info))
+    update!(params.except(:config_info))
   end
 
   def construct_config_info

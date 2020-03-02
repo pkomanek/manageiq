@@ -1,21 +1,9 @@
-describe MiqWorker::Runner do
+RSpec.describe MiqWorker::Runner do
   context "#start" do
     before do
       allow_any_instance_of(MiqWorker::Runner).to receive(:worker_initialization)
       @worker_base = MiqWorker::Runner.new
       allow(@worker_base).to receive(:prepare)
-    end
-
-    it "SIGINT" do
-      allow(@worker_base).to receive(:run).and_raise(Interrupt)
-      expect(@worker_base).to receive(:do_exit)
-      @worker_base.start
-    end
-
-    it "SIGTERM" do
-      allow(@worker_base).to receive(:run).and_raise(SignalException, "SIGTERM")
-      expect(@worker_base).to receive(:do_exit)
-      @worker_base.start
     end
 
     it "Handles exception TemporaryFailure" do
@@ -39,34 +27,42 @@ describe MiqWorker::Runner do
     end
   end
 
-  context "#get_messages" do
+  context "#config_out_of_date?" do
     before do
       allow_any_instance_of(MiqWorker::Runner).to receive(:worker_initialization)
       @worker_base = MiqWorker::Runner.new
     end
 
-    it "gets sync_config when last config change was recent" do
-      allow(@worker_base).to receive(:server_last_change).with(:last_config_change).and_return(1.minute.from_now.utc)
+    it "returns true for the first call and false for subsequent calls" do
+      expect(@worker_base).to receive(:server_last_change).with(:last_config_change).thrice.and_return(1.minute.from_now.utc)
+      expect(@worker_base.config_out_of_date?).to be_truthy
+      expect(@worker_base.config_out_of_date?).to be_falsey
+      expect(@worker_base.config_out_of_date?).to be_falsey
+    end
 
-      expect(@worker_base.get_messages).to eq([["sync_config"]])
+    it "returns true when last config change was updated" do
+      expect(@worker_base).to receive(:server_last_change).with(:last_config_change).twice.and_return(1.minute.ago.utc, 1.minute.from_now.utc)
+
+      expect(@worker_base.config_out_of_date?).to be_falsey
+      expect(@worker_base.config_out_of_date?).to be_truthy
     end
   end
 
-  context "#process_message" do
-    before do
-      allow(MiqServer).to receive(:my_zone).and_return("default")
-      @miq_server = EvmSpecHelper.local_miq_server
-      allow(@miq_server).to receive(:active_role).and_return("automate)")
-
-      @worker = FactoryBot.create(:miq_worker, :miq_server_id => @miq_server.id, :type => "MiqGenericWorker")
-      @worker_base = MiqWorker::Runner.new(:guid => @worker.guid)
+  context "#initialize" do
+    let(:worker) do
+      server_id = EvmSpecHelper.local_miq_server.id
+      FactoryBot.create(:miq_worker, :miq_server_id => server_id, :type => "MiqGenericWorker")
     end
 
-    it "syncs roles and configuration" do
-      expect(@worker_base).to receive(:after_sync_active_roles)
-      expect(@worker_base).to receive(:after_sync_config)
+    let!(:runner) { MiqWorker::Runner.new(:guid => worker.guid) }
 
-      @worker_base.send(:process_message, "sync_config")
+    it "configures the #worker attribute correctly" do
+      expect(runner.worker.id).to eq(worker.id)
+      expect(runner.worker.guid).to eq(worker.guid)
+    end
+
+    it "sets the MiqWorker.my_guid class attribute" do
+      expect(MiqWorker.my_guid).to eq(worker.guid)
     end
   end
 end

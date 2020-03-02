@@ -9,12 +9,7 @@ class MiqWorker::Runner
   attr_accessor :last_hb, :worker, :worker_settings
   attr_reader   :active_roles, :server
 
-  INTERRUPT_SIGNALS = ["SIGINT", "SIGTERM"]
-
-  # DELETE ME
-  OPTIONS_PARSER_SETTINGS = [
-    [:guid,       'EVM Worker GUID',       String],
-  ]
+  INTERRUPT_SIGNALS = %w[SIGINT SIGTERM].freeze
 
   SAFE_SLEEP_SECONDS = 60
 
@@ -37,16 +32,12 @@ class MiqWorker::Runner
     parent
   end
 
-  def self.interrupt_signals
-    INTERRUPT_SIGNALS
-  end
-
   def initialize(cfg = {})
     @cfg = cfg
     $log ||= Rails.logger
 
     @server = MiqServer.my_server(true)
-    @sigterm_received = false
+    @worker_should_exit = false
 
     worker_initialization
     after_initialize
@@ -99,39 +90,9 @@ class MiqWorker::Runner
     end
   end
 
-  ###############################
-  # VimBrokerWorker Methods
-  ###############################
-
-  def self.delay_startup_for_vim_broker?
-    !!@delay_startup_for_vim_broker
-  end
-
-  class << self
-    attr_writer :delay_startup_for_vim_broker
-  end
-
-  def self.delay_queue_delivery_for_vim_broker?
-    !!@delay_queue_delivery_for_vim_broker
-  end
-
-  class << self
-    attr_writer :delay_queue_delivery_for_vim_broker
-
-    alias require_vim_broker? delay_queue_delivery_for_vim_broker?
-    alias require_vim_broker= delay_queue_delivery_for_vim_broker=
-  end
-
   def start
     prepare
     run
-
-  rescue SignalException => e
-    if e.kind_of?(Interrupt) || self.class.interrupt_signals.include?(e.message)
-      do_exit("Interrupt signal (#{e}) received.")
-    else
-      raise
-    end
   end
 
   def recover_from_temporary_failure
@@ -144,7 +105,6 @@ class MiqWorker::Runner
     set_database_application_name
     ObjectSpace.garbage_collect
     started_worker_record
-    do_delay_startup_for_vim_broker if self.class.delay_startup_for_vim_broker? && MiqVimBrokerWorker.workers > 0
     do_before_work_loop
     self
   end
@@ -164,6 +124,7 @@ class MiqWorker::Runner
   def find_worker_record
     @worker = self.class.corresponding_model.find_by(:guid => @cfg[:guid])
     do_exit("Unable to find instance for worker GUID [#{@cfg[:guid]}].", 1) if @worker.nil?
+    MiqWorker.my_guid = @cfg[:guid]
   end
 
   def starting_worker_record
@@ -253,24 +214,6 @@ class MiqWorker::Runner
     exit exit_code
   end
 
-  #
-  # Message handling methods
-  #
-
-  def message_exit(*_args)
-    do_exit("Exit request received.")
-  end
-
-  def message_restarted(*_args)
-    # just consume the restarted message
-  end
-
-  def message_sync_config(*_args)
-    _log.info("#{log_prefix} Synchronizing configuration...")
-    sync_config
-    _log.info("#{log_prefix} Synchronizing configuration complete...")
-  end
-
   def sync_config
     # Sync roles
     @active_roles = MiqServer.my_active_roles(true)
@@ -279,7 +222,6 @@ class MiqWorker::Runner
     # Sync settings
     Vmdb::Settings.reload!
     @my_zone ||= MiqServer.my_zone
-    sync_log_level
     sync_worker_settings
     sync_blacklisted_events
     after_sync_config
@@ -290,11 +232,6 @@ class MiqWorker::Runner
     $log.log_hashes(@cfg)
 
     @worker.release_db_connection if @worker.respond_to?(:release_db_connection)
-  end
-
-  def sync_log_level
-    # TODO: Can this be removed since the Vmdb::Settings::Activator will do this anyway?
-    Vmdb::Loggers.apply_config(::Settings.log)
   end
 
   def sync_worker_settings
@@ -309,16 +246,6 @@ class MiqWorker::Runner
 
   def do_work
     raise NotImplementedError, _("must be implemented in a subclass")
-  end
-
-  def do_delay_startup_for_vim_broker
-    _log.info("#{log_prefix} Checking that VIM Broker has started before doing work")
-    loop do
-      break if MiqVimBrokerWorker.available?
-      heartbeat
-      sleep 3
-    end
-    _log.info("#{log_prefix} Starting work since VIM Broker has started")
   end
 
   def do_work_loop
@@ -340,9 +267,7 @@ class MiqWorker::Runner
         @backoff = nil
       end
 
-      # Should be caught by the rescue in `#start` and will run do_exit from
-      # there.
-      raise Interrupt if @sigterm_received
+      do_exit("Request to exit received:") if @worker_should_exit
 
       do_gc
       self.class.log_ruby_object_usage(worker_settings[:top_ruby_object_classes_to_log].to_i)
@@ -355,7 +280,14 @@ class MiqWorker::Runner
     # Heartbeats can be expensive, so do them only when needed
     return if @last_hb.kind_of?(Time) && (@last_hb + worker_settings[:heartbeat_freq]) >= now
 
-    ENV["WORKER_HEARTBEAT_METHOD"] == "file" ? heartbeat_to_file : heartbeat_to_drb
+    heartbeat_to_file
+
+    if config_out_of_date?
+      _log.info("#{log_prefix} Synchronizing configuration...")
+      sync_config
+      _log.info("#{log_prefix} Synchronizing configuration complete...")
+    end
+
     @last_hb = now
     do_heartbeat_work
   rescue SystemExit, SignalException
@@ -364,37 +296,26 @@ class MiqWorker::Runner
     do_exit("Error heartbeating because #{err.class.name}: #{err.message}\n#{err.backtrace.join('\n')}", 1)
   end
 
-  def heartbeat_to_drb
+  def heartbeat_to_file(timeout = nil)
     # Disable heartbeat check.  Useful if a worker is running in isolation
     # without the oversight of MiqServer::WorkerManagement
     return if skip_heartbeat?
 
-    messages = worker_monitor_drb.worker_heartbeat(@worker.pid, @worker.class.name, @worker.queue_name)
-    messages.each { |msg, *args| process_message(msg, *args) }
-  rescue DRb::DRbError => err
-    do_exit("Error heartbeating to MiqServer because #{err.class.name}: #{err.message}", 1)
-  end
-
-  def heartbeat_to_file(timeout = nil)
     timeout ||= worker_settings[:heartbeat_timeout] || Workers::MiqDefaults.heartbeat_timeout
     File.write(@worker.heartbeat_file, (Time.now.utc + timeout).to_s)
-
-    get_messages.each { |msg, *args| process_message(msg, *args) }
   end
 
-  def get_messages
-    messages = []
+  def config_out_of_date?
     @my_last_config_change ||= Time.now.utc
 
     last_config_change = server_last_change(:last_config_change)
     if last_config_change && last_config_change > @my_last_config_change
       _log.info("#{log_prefix} Configuration has changed, New TS: #{last_config_change}, Old TS: #{@my_last_config_change}")
-      messages << ["sync_config"]
-
       @my_last_config_change = last_config_change
+      return true
     end
 
-    messages
+    false
   end
 
   def key_store
@@ -495,8 +416,9 @@ class MiqWorker::Runner
   # received from the container management system (aka OpenShift).  The SIGINT
   # trap is mostly a developer convenience.
   def setup_sigterm_trap
-    Kernel.trap("TERM") { @sigterm_received = true }
-    Kernel.trap("INT")  { @sigterm_received = true }
+    INTERRUPT_SIGNALS.each do |signal|
+      Kernel.trap(signal) { @worker_should_exit = true }
+    end
   end
 
   protected
@@ -508,15 +430,6 @@ class MiqWorker::Runner
     else
       _log.warn("#{log_prefix} Message [#{message}] is not recognized, ignoring")
     end
-  end
-
-  def clean_broker_connection
-    if $vim_broker_client
-      $vim_broker_client.releaseSession(Process.pid)
-      $vim_broker_client = nil
-    end
-  rescue => err
-    _log.info("#{log_prefix} Releasing any broker connections for pid: [#{Process.pid}], ERROR: #{err.message}")
   end
 
   def process_title

@@ -16,7 +16,7 @@ class ManageIQ::Providers::BaseManager::EventCatcher < MiqWorker
     end
   end
 
-  def self.ems_class
-    parent
+  def self.kill_priority
+    MiqWorkerType::KILL_PRIORITY_EVENT_CATCHERS
   end
 end

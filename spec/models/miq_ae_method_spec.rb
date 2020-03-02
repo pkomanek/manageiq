@@ -1,4 +1,4 @@
-describe MiqAeMethod do
+RSpec.describe MiqAeMethod do
   let(:user) { FactoryBot.create(:user_with_group) }
   it "should return editable as false if the parent namespace/class is not editable" do
     n1 = FactoryBot.create(:miq_ae_system_domain, :tenant => user.current_tenant)
@@ -22,6 +22,20 @@ describe MiqAeMethod do
                             :language => "ruby",
                             :location => "inline")
     expect(f1.editable?(user)).to be_truthy
+  end
+
+  it "should lookup method" do
+    n1 = FactoryBot.create(:miq_ae_system_domain, :tenant => user.current_tenant)
+    c1 = FactoryBot.create(:miq_ae_class, :namespace_id => n1.id, :name => "foo")
+    f1 = FactoryBot.create(:miq_ae_method,
+                           :class_id => c1.id,
+                           :name     => "foo_method",
+                           :scope    => "instance",
+                           :language => "ruby",
+                           :location => "inline")
+    expect(f1.editable?(user)).to be_falsey
+
+    expect(MiqAeMethod.lookup_by_class_id_and_name(c1.id, "foo_method")).to eq(f1)
   end
 
   context "#copy" do

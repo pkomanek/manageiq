@@ -1,4 +1,4 @@
-describe VmOrTemplate do
+RSpec.describe VmOrTemplate do
   include Spec::Support::ArelHelper
 
   let(:vm)      { FactoryBot.create(:vm_or_template) }
@@ -79,6 +79,26 @@ describe VmOrTemplate do
       it("is #registered?")            { expect(subject.registered?).to be true }
       it("is in registered_vms")       { expect(registered_vms).to include subject }
       it("is not in unregistered_vms") { expect(unregistered_vms).to_not include subject }
+    end
+  end
+
+  describe ".lookup_by_full_location" do
+    it "should lookup vm by full location" do
+      storage = Storage.new(:name => "//test/storage")
+      vm = FactoryBot.create(:vm_vmware, :name => 'vm', :vendor => 'vmware', :storage => storage, :location => 'test_location')
+
+      expect(storage.save!).to be_truthy
+      expect(VmOrTemplate.lookup_by_full_location("#{storage.name}/#{vm.location}")).to eq(vm)
+    end
+  end
+
+  describe ".lookup_by_path" do
+    it "should lookup vm by path" do
+      storage = Storage.new(:name => "//test/storage")
+      vm = FactoryBot.create(:vm_vmware, :name => 'vm', :vendor => 'vmware', :storage => storage, :location => 'test_location')
+
+      expect(storage.save!).to be_truthy
+      expect(VmOrTemplate.lookup_by_path("#{storage.name}/#{vm.location}")).to eq(vm)
     end
   end
 
@@ -613,7 +633,7 @@ describe VmOrTemplate do
 
     it "changes the tenant after changing the group" do
       vm = FactoryBot.create(:vm_vmware, :miq_group => group1)
-      vm.update_attributes(:miq_group_id => group2.id)
+      vm.update(:miq_group_id => group2.id)
       expect(vm.tenant).to eq(tenant2)
     end
   end
@@ -775,6 +795,76 @@ describe VmOrTemplate do
       vm
       disk # make sure the record is created
       expect(virtual_column_sql_value(VmOrTemplate, "provisioned_storage")).to eq(10_496_000)
+    end
+  end
+
+  describe ".num_cpu" do
+    context "with no hardware record" do
+      it "calculates" do
+        vm = FactoryBot.create(:vm_vmware)
+        expect(vm.num_cpu).to eq(0)
+      end
+    end
+
+    context "with empty hardware" do
+      let!(:vm) { FactoryBot.create(:vm_vmware, :hardware => hardware) }
+      let(:hardware) { FactoryBot.create(:hardware, :cpu_sockets => nil) }
+
+      it "bails ruby calculation" do
+        expect(vm.num_cpu).to eq(0)
+      end
+
+      it "bails database calculation" do
+        loaded_vm = VmOrTemplate.select(:id, :num_cpu).find(vm.id)
+        expect(loaded_vm.num_cpu).to eq(0)
+
+        expect(virtual_column_sql_value(VmOrTemplate, "num_cpu")).to be_nil # darn, wanted 0
+      end
+    end
+
+    context "with values" do
+      let!(:vm) { FactoryBot.create(:vm_vmware, :hardware => hardware) }
+      let(:hardware) { FactoryBot.create(:hardware, :cpu_sockets => 4) }
+
+      it "calculates in ruby" do
+        expect(vm.num_cpu).to eq(4)
+      end
+
+      it "calculates in the database" do
+        expect(virtual_column_sql_value(VmOrTemplate, "num_cpu")).to eq(4)
+      end
+    end
+  end
+
+  describe ".num_disks", ".num_hard_disks" do
+    let(:vm) { FactoryBot.create(:vm_vmware, :hardware => hardware) }
+    let(:hardware) { FactoryBot.create(:hardware, :memory_mb => 10) }
+    let(:disk) { FactoryBot.create(:disk, :device_type => 'disk', :hardware => hardware) }
+
+    it "calculates in ruby with null hardware" do
+      vm = FactoryBot.create(:vm_vmware)
+      expect(vm.num_disks).to eq(0)
+    end
+
+    it "uses calculated (inline) attribute with null hardware" do
+      vm = FactoryBot.create(:vm_vmware)
+      vm2 = VmOrTemplate.select(:id, :num_disks, :num_hard_disks).find_by(:id => vm.id)
+      expect { expect(vm2.num_disks).to eq(0) }.to match_query_limit_of(0)
+      expect { expect(vm2.num_hard_disks).to eq(0) }.to match_query_limit_of(0)
+    end
+
+    it "calculates in ruby" do
+      vm
+      disk # make sure the record is created
+      expect(vm.num_disks).to eq(1)
+      expect(vm.num_hard_disks).to eq(1)
+    end
+
+    it "uses calculated (inline) attribute" do
+      vm
+      disk # make sure the record is created
+      expect(virtual_column_sql_value(VmOrTemplate, "num_disks")).to eq(1)
+      expect(virtual_column_sql_value(VmOrTemplate, "num_hard_disks")).to eq(1)
     end
   end
 
@@ -941,13 +1031,13 @@ describe VmOrTemplate do
 
   describe ".active" do
     it "detects active" do
-      vm.update_attributes(:ext_management_system => ems)
+      vm.update(:ext_management_system => ems)
       expect(vm).to be_active
       expect(virtual_column_sql_value(VmOrTemplate, "active")).to be true
     end
 
     it "detects non-active" do
-      vm.update_attributes(:ext_management_system => nil)
+      vm.update(:ext_management_system => nil)
       expect(vm).not_to be_active
       expect(virtual_column_sql_value(VmOrTemplate, "active")).to be false
     end
@@ -955,25 +1045,25 @@ describe VmOrTemplate do
 
   describe ".archived" do
     it "detects archived" do
-      vm.update_attributes(:ext_management_system => nil, :storage => nil)
+      vm.update(:ext_management_system => nil, :storage => nil)
       expect(vm).to be_archived
       expect(virtual_column_sql_value(VmOrTemplate, "archived")).to be true
     end
 
     it "detects non-archived (has ems and storage)" do
-      vm.update_attributes(:ext_management_system => ems, :storage => storage)
+      vm.update(:ext_management_system => ems, :storage => storage)
       expect(vm).not_to be_archived
       expect(virtual_column_sql_value(VmOrTemplate, "archived")).to be false
     end
 
     it "detects non-archived (has ems)" do
-      vm.update_attributes(:ext_management_system => ems, :storage => nil)
+      vm.update(:ext_management_system => ems, :storage => nil)
       expect(vm).not_to be_archived
       expect(virtual_column_sql_value(VmOrTemplate, "archived")).to be false
     end
 
     it "detects non-archived (has storage)" do
-      vm.update_attributes(:ext_management_system => nil, :storage => storage)
+      vm.update(:ext_management_system => nil, :storage => storage)
       expect(virtual_column_sql_value(VmOrTemplate, "archived")).to be false
       expect(vm).not_to be_archived
       vm.ext_management_system = nil
@@ -982,25 +1072,25 @@ describe VmOrTemplate do
 
   describe ".orphaned" do
     it "detects orphaned" do
-      vm.update_attributes(:ext_management_system => nil, :storage => storage)
+      vm.update(:ext_management_system => nil, :storage => storage)
       expect(vm).to be_orphaned
       expect(virtual_column_sql_value(VmOrTemplate, "orphaned")).to be true
     end
 
     it "detects non-orphaned (ems and no storage)" do
-      vm.update_attributes(:ext_management_system => ems, :storage => nil)
+      vm.update(:ext_management_system => ems, :storage => nil)
       expect(vm).not_to be_orphaned
       expect(virtual_column_sql_value(VmOrTemplate, "orphaned")).to be false
     end
 
     it "detects non-orphaned (no storage)" do
-      vm.update_attributes(:ext_management_system => nil, :storage => nil)
+      vm.update(:ext_management_system => nil, :storage => nil)
       expect(vm).not_to be_orphaned
       expect(virtual_column_sql_value(VmOrTemplate, "orphaned")).to be false
     end
 
     it "detects non-orphaned (has ems)" do
-      vm.update_attributes(:ext_management_system => ems, :storage => storage)
+      vm.update(:ext_management_system => ems, :storage => storage)
       expect(vm).not_to be_orphaned
       expect(virtual_column_sql_value(VmOrTemplate, "orphaned")).to be false
     end
@@ -1053,13 +1143,13 @@ describe VmOrTemplate do
     end
 
     it "detects false" do
-      vm.update_attributes(:template => false)
+      vm.update(:template => false)
       expect(vm.v_is_a_template).to eq("False")
       expect(virtual_column_sql_value(VmOrTemplate, "v_is_a_template")).to eq(false)
     end
 
     it "detects true" do
-      vm.update_attributes(:template => true)
+      vm.update(:template => true)
       expect(vm.v_is_a_template).to eq("True")
       expect(virtual_column_sql_value(VmOrTemplate, "v_is_a_template")).to eq(true)
     end
@@ -1159,7 +1249,7 @@ describe VmOrTemplate do
       FactoryBot.create(:vm_or_template)
       FactoryBot.create(:vm_or_template, :storage => FactoryBot.create(:storage))
 
-      expect(VmOrTemplate.with_ems).to eq([vm])
+      expect(VmOrTemplate.active).to eq([vm])
     end
   end
 
@@ -1191,7 +1281,7 @@ describe VmOrTemplate do
     end
 
     it "when a folder is renamed" do
-      folder_blue1.update_attributes(:name => "new blue1")
+      folder_blue1.update(:name => "new blue1")
 
       described_class.post_refresh_ems(ems.id, start_time)
 
@@ -1259,7 +1349,7 @@ describe VmOrTemplate do
     end
 
     it "when a folder is renamed and a folder is moved under it simultaneously" do
-      folder_blue1.update_attributes(:name => "new blue1")
+      folder_blue1.update(:name => "new blue1")
       folder_blue2.parent = folder_blue1
 
       described_class.post_refresh_ems(ems.id, start_time)
@@ -1294,7 +1384,7 @@ describe VmOrTemplate do
     end
 
     it "when a folder is renamed and a VM is moved under it simultaneously" do
-      folder_blue2.update_attributes(:name => "new blue2")
+      folder_blue2.update(:name => "new blue2")
       vm_blue1.with_relationship_type("ems_metadata") { |v| v.parent = folder_blue2 }
 
       described_class.post_refresh_ems(ems.id, start_time)

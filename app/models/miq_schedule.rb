@@ -93,7 +93,7 @@ class MiqSchedule < ApplicationRecord
       msg
     elsif sched.resource.respond_to?(method)
       sched.resource.send(method, *sched.sched_action[:args])
-      sched.update_attributes(:last_run_on => Time.now.utc)
+      sched.update(:last_run_on => Time.now.utc)
     else
       _log.warn("[#{sched.name}] no such action: [#{method}], aborting schedule")
     end
@@ -232,7 +232,7 @@ class MiqSchedule < ApplicationRecord
 
   def action_automation_request(_klass, _at)
     parameters = filter[:parameters]
-    user = User.find_by_userid(userid)
+    user = User.lookup_by_userid(userid)
     AutomationRequest.create_from_scheduled_task(user, filter[:uri_parts], parameters)
   end
 
@@ -439,7 +439,7 @@ class MiqSchedule < ApplicationRecord
     slist.each do |sched|
       rec = find_by(:name => sched[:attributes][:name])
       if rec
-        rec.update_attributes(sched[:attributes])
+        rec.update(sched[:attributes])
       else
         create(sched[:attributes])
       end

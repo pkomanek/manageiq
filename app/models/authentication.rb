@@ -36,8 +36,6 @@ class Authentication < ApplicationRecord
   before_save :set_credentials_changed_on
   after_save :after_authentication_changed
 
-  before_validation :set_tenant_from_group
-
   serialize :options
 
   include OwnershipMixin
@@ -114,14 +112,14 @@ class Authentication < ApplicationRecord
   def validation_successful
     new_status = :valid
     _log.info("[#{resource_type}] [#{resource_id}], previously valid/invalid on: [#{last_valid_on}]/[#{last_invalid_on}], previous status: [#{status}]") if status != new_status.to_s
-    update_attributes(:status => new_status.to_s.capitalize, :status_details => 'Ok', :last_valid_on => Time.now.utc)
+    update(:status => new_status.to_s.capitalize, :status_details => 'Ok', :last_valid_on => Time.now.utc)
     raise_event(new_status)
   end
 
   def validation_failed(status = :unreachable, message = nil)
     message ||= ERRORS[status]
     _log.warn("[#{resource_type}] [#{resource_id}], previously valid on: #{last_valid_on}, previous status: [#{self.status}]")
-    update_attributes(:status => status.to_s.capitalize, :status_details => message.to_s.truncate(200), :last_invalid_on => Time.now.utc)
+    update(:status => status.to_s.capitalize, :status_details => message.to_s.truncate(200), :last_invalid_on => Time.now.utc)
     raise_event(status, message)
   end
 
@@ -153,10 +151,6 @@ class Authentication < ApplicationRecord
   end
 
   private
-
-  def set_tenant_from_group
-    self.tenant_id = miq_group.tenant_id if miq_group
-  end
 
   def set_credentials_changed_on
     return unless @auth_changed

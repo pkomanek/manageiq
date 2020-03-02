@@ -9,8 +9,7 @@ FactoryBot.define do
   end
 
   factory :host_with_ref, :parent => :host do
-    sequence(:ems_ref)     { |n| "host-#{seq_padded_for_sorting(n)}" }
-    sequence(:ems_ref_obj) { |n| VimString.new("host-#{seq_padded_for_sorting(n)}", "HostSystem", "ManagedObjectReference") }
+    sequence(:ems_ref) { |n| "host-#{seq_padded_for_sorting(n)}" }
   end
 
   factory :host_with_authentication, :parent => :host do
@@ -25,14 +24,6 @@ FactoryBot.define do
     end
   end
 
-  # Factories for perf_capture_timer and perf_capture_gap testing
-  factory :host_target_vmware, :parent => :host, :class => 'ManageIQ::Providers::Vmware::InfraManager::Host' do
-    after(:create) do |x|
-      x.perf_capture_enabled = toggle_on_name_seq(x)
-      2.times { x.vms << FactoryBot.create(:vm_target_vmware, :ext_management_system => x.ext_management_system) }
-    end
-  end
-
   factory :host_with_ipmi, :parent => :host do
     ipmi_address { "127.0.0.1" }
     mac_address  { "aa:bb:cc:dd:ee:ff" }
@@ -42,8 +33,13 @@ FactoryBot.define do
   end
 
   # Type specific subclasses
-  factory(:host_vmware,     :parent => :host,        :class => "ManageIQ::Providers::Vmware::InfraManager::Host")
-  factory(:host_vmware_esx, :parent => :host_vmware, :class => "ManageIQ::Providers::Vmware::InfraManager::HostEsx") { vmm_product { "ESX" } }
+  factory(:host_vmware,     :parent => :host,        :class => "ManageIQ::Providers::Vmware::InfraManager::Host") do
+    ems_ref_type { "HostSystem" }
+  end
+  factory(:host_vmware_esx, :parent => :host_vmware, :class => "ManageIQ::Providers::Vmware::InfraManager::HostEsx") do
+    ems_ref_type { "HostSystem" }
+    vmm_product  { "ESX" }
+  end
 
   factory :host_redhat, :parent => :host, :class => "ManageIQ::Providers::Redhat::InfraManager::Host" do
     sequence(:ems_ref) { |n| "host-#{seq_padded_for_sorting(n)}" }
@@ -51,9 +47,9 @@ FactoryBot.define do
   end
 
   factory :host_openstack_infra, :parent => :host, :class => "ManageIQ::Providers::Openstack::InfraManager::Host" do
-    vmm_vendor  { "unknown" }
-    ems_ref     { "openstack-perf-host" }
-    ems_ref_obj { "openstack-perf-host-nova-instance" }
+    vmm_vendor   { "unknown" }
+    ems_ref      { "openstack-perf-host" }
+    uid_ems      { "openstack-perf-host-nova-instance" }
     association :ems_cluster, factory: :ems_cluster_openstack
   end
 

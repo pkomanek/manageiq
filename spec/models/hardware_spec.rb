@@ -1,4 +1,4 @@
-describe Hardware do
+RSpec.describe Hardware do
   include Spec::Support::ArelHelper
   let(:vm) { FactoryBot.create(:vm_vmware, :hardware => FactoryBot.create(:hardware)) }
   let(:template) { FactoryBot.create(:template_vmware, :hardware => FactoryBot.create(:hardware)) }
@@ -52,6 +52,22 @@ describe Hardware do
         hardware.save
         expect(virtual_column_sql_value(Hardware, "aggregate_cpu_speed")).to eq(4000)
       end
+    end
+  end
+
+  describe ".num_disks", ".num_hard_disks" do
+    let(:hardware) { FactoryBot.create(:hardware) }
+
+    before { FactoryBot.create_list(:disk, 3, :hardware => hardware, :device_type => 'disk') }
+
+    it "calculates in ruby" do
+      expect(hardware.num_disks).to eq(3)
+      expect(hardware.num_hard_disks).to eq(3)
+    end
+
+    it "calculates in the database" do
+      expect(virtual_column_sql_value(Hardware, "num_disks")).to eq(3)
+      expect(virtual_column_sql_value(Hardware, "num_hard_disks")).to eq(3)
     end
   end
 

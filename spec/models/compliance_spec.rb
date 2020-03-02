@@ -1,4 +1,4 @@
-describe Compliance do
+RSpec.describe Compliance do
   context "A small virtual infrastructure" do
     let(:ems_vmware) { FactoryBot.create(:ems_vmware, :zone => zone) }
     let(:host1)      { FactoryBot.create(:host, :ext_management_system => ems_vmware) }
@@ -156,7 +156,7 @@ describe Compliance do
         end
 
         it "compliant" do
-          vm1.update_attributes(:retired => true)
+          vm1.update(:retired => true)
           expect(MiqEvent).to receive(:raise_evm_event_queue).with(vm1, "vm_compliance_passed")
           expect(Compliance.check_compliance(vm1)).to be_truthy
           expect(vm1.compliances.last.compliant).to be_truthy

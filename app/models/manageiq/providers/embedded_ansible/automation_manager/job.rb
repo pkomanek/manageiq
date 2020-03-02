@@ -4,30 +4,31 @@ class ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job < ManageIQ::P
   require_nested :Status
 
   belongs_to :ext_management_system, :foreign_key => :ems_id, :class_name => "ManageIQ::Providers::AutomationManager", :inverse_of => false
-  belongs_to :job_template, :foreign_key => :orchestration_template_id, :class_name => "ConfigurationScript", :inverse_of => false
   belongs_to :playbook, :foreign_key => :configuration_script_base_id, :inverse_of => false
 
   belongs_to :miq_task, :foreign_key => :ems_ref, :inverse_of => false
+
+  virtual_has_many :job_plays
 
   #
   # Allowed options are
   #   :limit      => String
   #   :extra_vars => Hash
   #
-  def self.create_stack(template, options = {})
-    template_ref = template.new_record? ? nil : template
-    new(:name                  => template.name,
-        :ext_management_system => template.manager,
-        :job_template          => template_ref).tap do |stack|
-      stack.send(:update_with_provider_object, raw_create_stack(template, options))
+  def self.create_stack(playbook, options = {})
+    new(:name                  => playbook.name,
+        :ext_management_system => playbook.manager,
+        :verbosity             => options[:verbosity].to_i,
+        :authentications       => collect_authentications(playbook.manager, options),
+        :playbook              => playbook).tap do |stack|
+      stack.send(:update_with_provider_object, raw_create_stack(playbook, options))
     end
   end
 
-  def self.raw_create_stack(template, options = {})
-    options = reconcile_extra_vars_keys(template, options)
-    template.run(options)
+  def self.raw_create_stack(playbook, options = {})
+    playbook.run(options)
   rescue StandardError => e
-    _log.error("Failed to create job from template(#{template.name}), error: #{e}")
+    _log.error("Failed to create job from playbook(#{playbook.name}), error: #{e}")
     raise MiqException::MiqOrchestrationProvisionError, e.to_s, e.backtrace
   end
 
@@ -53,7 +54,11 @@ class ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job < ManageIQ::P
   end
 
   def job_plays
-    []
+    resources.where(:resource_category => 'job_play').order(:start_time)
+  end
+
+  def playbook_set_stats
+    raw_stdout_json.dig(-1, 'event_data', 'artifact_data')
   end
 
   # Intend to be called by UI to display stdout. The stdout is stored in MiqTask#task_results or #message if error
@@ -89,22 +94,59 @@ class ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job < ManageIQ::P
 
   private
 
-  # If extra_vars are passed through automate, all keys are considered as attributes and
-  # converted to lower case. Need to convert them back to original definitions in the
-  # job template through survey_spec or variables
-  def self.reconcile_extra_vars_keys(_template, options)
-    options
+  def self.collect_authentications(manager, options)
+    credential_ids = options.values_at(
+      :credential,
+      :cloud_credential,
+      :network_credential,
+      :vault_credential
+    ).compact
+    manager.credentials.where(:id => credential_ids)
   end
-  private_class_method :reconcile_extra_vars_keys
+  private_class_method :collect_authentications
 
   def update_with_provider_object(raw_job)
-    self.miq_task ||= raw_job.miq_task
+    transaction do
+      self.miq_task ||= raw_job.miq_task
 
-    update_attributes!(
-      :status      => miq_task.state,
-      :start_time  => miq_task.started_on,
-      :finish_time => raw_status.completed? ? miq_task.updated_on : nil
-    )
+      self.status      = miq_task.state
+      self.start_time  = miq_task.started_on
+      self.finish_time = raw_status.completed? ? miq_task.updated_on : nil
+
+      update_plays
+      save!
+    end
+  end
+
+  def update_plays
+    plays = raw_stdout_json.select do |playbook_event|
+      playbook_event["event"] == "playbook_on_play_start"
+    end.collect do |play|
+      {
+        :name              => play["event_data"]["play"],
+        :resource_status   => play["failed"] ? 'failed' : 'successful',
+        :start_time        => play["created"],
+        :ems_ref           => play["uuid"],
+        :resource_category => "job_play"
+      }
+    end
+
+    # Set each play's finish_time to the next play's start time, with the
+    # final play's finish time set to the entire job's finish time.
+    plays.each_cons(2) do |last_play, play|
+      last_play[:finish_time] = play[:start_time]
+    end
+    plays[-1][:finish_time] = finish_time if plays.any?
+
+    old_resources = resources.index_by(&:ems_ref)
+    self.resources = plays.collect do |play_hash|
+      if (old_resource = old_resources[play_hash[:ems_ref].to_s])
+        old_resource.update!(play_hash)
+        old_resource
+      else
+        OrchestrationStackResource.new(play_hash)
+      end
+    end
   end
 
   def raw_stdout_json

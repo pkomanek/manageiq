@@ -11,7 +11,7 @@ module RetirementMixin
 
   module ClassMethods
     def make_retire_request(*src_ids, requester, initiated_by: 'user')
-      klass = (name.demodulize + "RetireRequest").constantize
+      klass = (base_class.name.demodulize + "RetireRequest").constantize
       options = {:src_ids => src_ids.presence, :__initiated_by__ => initiated_by, :__request_type__ => klass.request_types.first}
       set_retirement_requester(options[:src_ids], requester)
       klass.make_request(nil, options, requester)
@@ -148,7 +148,7 @@ module RetirementMixin
       lock do
         reload
         if error_retiring? || retirement_state.blank?
-          update_attributes(:retirement_state => "initializing", :retirement_requester => requester)
+          update(:retirement_state => "initializing", :retirement_requester => requester)
           event_name = "request_#{retirement_event_prefix}_retire"
           _log.info("calling #{event_name}")
           begin
@@ -176,13 +176,13 @@ module RetirementMixin
 
   def mark_retired
     self[:retires_on] = Time.zone.now
-    update_attributes(:retired => true, :retirement_state => "retired")
+    update(:retired => true, :retirement_state => "retired")
   end
 
   def start_retirement
     return if retired? || retiring?
     $log.info("Starting Retirement for [#{name}]")
-    update_attributes(:retirement_state => "retiring")
+    update(:retirement_state => "retiring")
   end
 
   def retired_validated?
@@ -255,6 +255,10 @@ module RetirementMixin
   def system_context_requester
     if evm_owner.blank?
       $log.info("System context defaulting to admin user because owner of #{name} (#{self.class}) not set or owner no longer found in database.")
+      return User.super_admin
+    end
+    if evm_owner.current_group.nil?
+      $log.info("System context defaulting to admin user because owner of #{name} (#{self.class}) was found but lacks a group.")
       return User.super_admin
     end
     $log.info("Setting retirement requester of #{name} to #{evm_owner_id}.")

@@ -1,11 +1,11 @@
-describe PerEmsWorkerMixin do
+RSpec.describe PerEmsWorkerMixin do
   before do
     _guid, server, zone = EvmSpecHelper.create_guid_miq_server_zone
     @ems = FactoryBot.create(:ems_vmware, :with_unvalidated_authentication, :zone => zone)
     @ems_queue_name = "ems_#{@ems.id}"
 
     # General stubbing for testing any worker (methods called during initialize)
-    @worker_record = FactoryBot.create(:miq_ems_refresh_core_worker, :queue_name => "ems_#{@ems.id}", :miq_server => server)
+    @worker_record = FactoryBot.create(:miq_ems_refresh_worker, :queue_name => "ems_#{@ems.id}", :miq_server => server)
     @worker_class  = @worker_record.class
   end
 
@@ -13,6 +13,10 @@ describe PerEmsWorkerMixin do
     expect(@worker_class.queue_name_for_ems(nil)).to be_nil
     expect(@worker_class.queue_name_for_ems("foo")).to eq("foo")
     expect(@worker_class.queue_name_for_ems(@ems)).to eq(@ems_queue_name)
+  end
+
+  it ".lookup_by_ems" do
+    expect(@worker_class.lookup_by_ems(@ems).first).to eq(@worker_record)
   end
 
   it ".all_valid_ems_in_zone" do

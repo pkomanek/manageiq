@@ -55,7 +55,7 @@ module MiqProvisionMixin
     @owner ||= begin
       email = get_option(:owner_email).try(:downcase)
       return if email.blank?
-      User.find_by_lower_email(email, get_user).tap do |owner|
+      User.lookup_by_lower_email(email, get_user).tap do |owner|
         owner.current_group_by_description = get_option(:owner_group) if owner
       end
     end
@@ -122,7 +122,7 @@ module MiqProvisionMixin
 
     options[key] = items.flatten
     _log.info("option <#{key}> being set to <#{items.inspect}>")
-    update_attributes(:options => options)
+    update(:options => options)
   end
 
   def post_customization_templates(template_id)

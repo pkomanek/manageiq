@@ -109,7 +109,7 @@ module Authenticator
 
       run_task(taskid, "Authorizing") do |task|
         begin
-          identity = find_external_identity(username, *args)
+          identity = find_external_identity(username, args[0], args[1])
 
           unless identity
             msg = "Authentication failed for userid #{username}, unable to find user object in #{self.class.proper_name}"
@@ -151,6 +151,10 @@ module Authenticator
       end
     end
 
+    def find_external_identity(_username, _user_attrs, _membership_list)
+      raise NotImplementedError, _("find_external_identity must be implemented in a subclass")
+    end
+
     def find_or_initialize_user(identity, username)
       userid = userid_for(identity, username)
       user   = case_insensitive_find_by_userid(userid)
@@ -160,7 +164,7 @@ module Authenticator
 
     def authenticate_with_http_basic(username, password, request = nil, options = {})
       options[:require_user] ||= false
-      user, username = find_by_principalname(username)
+      user, username = lookup_by_principalname(username)
       result = nil
       begin
         result = user && authenticate(username, password, request, options)
@@ -175,7 +179,7 @@ module Authenticator
     end
 
     # FIXME: LDAP
-    def find_by_principalname(username)
+    def lookup_by_principalname(username)
       unless (user = case_insensitive_find_by_userid(username))
         if username.include?('\\')
           parts = username.split('\\')
@@ -188,6 +192,9 @@ module Authenticator
       end
       [user, username]
     end
+
+    alias find_by_principalname lookup_by_principalname
+    Vmdb::Deprecation.deprecate_methods(self, :find_by_principalname => :lookup_by_principalname)
 
     private
 
@@ -210,7 +217,7 @@ module Authenticator
     end
 
     def case_insensitive_find_by_userid(username)
-      user =  User.find_by_userid(username)
+      user =  User.lookup_by_userid(username)
       user || User.in_my_region.where('lower(userid) = ?', username.downcase).order(:lastlogon).last
     end
 

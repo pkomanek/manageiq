@@ -9,17 +9,17 @@ module MiqReport::Generator
   include_concern 'Utilization'
 
   DATE_TIME_BREAK_SUFFIXES = [
-    [_("Hour"),              "hour"],
-    [_("Day"),               "day"],
-    [_("Week"),              "week"],
-    [_("Month"),             "month"],
-    [_("Quarter"),           "quarter"],
-    [_("Year"),              "year"],
-    [_("Hour of the Day"),   "hour_of_day"],
-    [_("Day of the Week"),   "day_of_week"],
-    [_("Day of the Month"),  "day_of_month"],
-    [_("Week of the Year"),  "week_of_year"],
-    [_("Month of the Year"), "month_of_year"]
+    [N_("Hour"),              "hour"],
+    [N_("Day"),               "day"],
+    [N_("Week"),              "week"],
+    [N_("Month"),             "month"],
+    [N_("Quarter"),           "quarter"],
+    [N_("Year"),              "year"],
+    [N_("Hour of the Day"),   "hour_of_day"],
+    [N_("Day of the Week"),   "day_of_week"],
+    [N_("Day of the Month"),  "day_of_month"],
+    [N_("Week of the Year"),  "week_of_year"],
+    [N_("Month of the Year"), "month_of_year"]
   ].freeze
 
   module ClassMethods
@@ -81,7 +81,34 @@ module MiqReport::Generator
   end
 
   def get_include_for_find
-    include_as_hash(include.presence || invent_report_includes).deep_merge(include_for_find || {}).presence
+    get_include.deep_merge(include_for_find || {}).presence
+  end
+
+  def get_include
+    include_as_hash(include.presence || invent_report_includes)
+  end
+
+  def polymorphic_includes
+    @polymorphic_includes ||= begin
+      top_level_rels = Array(get_include.try(:keys)) + Array(get_include_for_find.try(:keys))
+
+      top_level_rels.uniq.each_with_object([]) do |assoc, polymorphic_rels|
+        reflection = db_klass.reflect_on_association(assoc)
+        polymorphic_rels << assoc if reflection && reflection.polymorphic?
+      end
+    end
+  end
+
+  def get_include_for_find_rbac
+    polymorphic_includes.each_with_object(get_include_for_find.dup) do |key, includes|
+      includes.delete(key)
+    end
+  end
+
+  def get_include_rbac
+    polymorphic_includes.each_with_object(get_include.dup) do |key, includes|
+      includes.delete(key)
+    end
   end
 
   def invent_includes
@@ -177,7 +204,7 @@ module MiqReport::Generator
       User.with_user(options[:user]) { _generate_table(options) }
     elsif options[:userid]
       userid = MiqReportResult.parse_userid(options[:userid])
-      user = User.find_by_userid(userid)
+      user = User.lookup_by_userid(userid)
       User.with_user(user, userid) { _generate_table(options) }
     else
       _generate_table(options)
@@ -241,25 +268,27 @@ module MiqReport::Generator
     results
   end
 
+  def performance_report_time_range
+    if db_options[:custom_time_range]
+      db_options[:start_date]..db_options[:end_date]
+    else
+      Metric::Helper.time_range_from_offset(interval, db_options[:start_offset], db_options[:end_offset], tz)
+    end
+  end
+
   # Ad-hoc daily performance reports
   #   Daily for: Performance - Clusters...
   def generate_daily_metric_rollup_results(options = {})
     unless conditions.nil?
       conditions.preprocess_options = {:vim_performance_daily_adhoc => (time_profile && time_profile.rollup_daily_metrics)}
-      exp_sql, exp_includes = conditions.to_sql
-      # only_cols += conditions.columns_for_sql # Add cols references in expression to ensure they are present for evaluation
     end
 
-    time_range = Metric::Helper.time_range_from_offset(interval, db_options[:start_offset], db_options[:end_offset], tz)
-    # TODO: add .select(only_cols)
-    db_includes = get_include_for_find
     results = Metric::Helper.find_for_interval_name('daily', time_profile || tz, db_klass)
-                            .where(where_clause).where(exp_sql)
+                            .where(where_clause)
                             .where(options[:where_clause])
-                            .where(:timestamp => time_range)
-                            .includes(db_includes)
-                            .references(db_includes)
-                            .includes(exp_includes || [])
+                            .where(:timestamp => performance_report_time_range)
+                            .includes(get_include_for_find)
+                            .references(db_klass.includes_to_references(get_include))
                             .limit(options[:limit])
     results = Rbac.filtered(results, :class        => db,
                                      :filter       => conditions,
@@ -270,19 +299,14 @@ module MiqReport::Generator
 
   # Ad-hoc performance reports
   def generate_interval_metric_results(options = {})
-    time_range = Metric::Helper.time_range_from_offset(interval, db_options[:start_offset], db_options[:end_offset])
-
-    # Only build where clause from expression for hourly report. It will not work properly for daily because many values are rolled up from hourly.
-    exp_sql, exp_includes = conditions.to_sql(tz) unless conditions.nil? || db_klass.respond_to?(:instances_are_derived?)
-
-    results = db_klass.with_interval_and_time_range(interval, time_range)
+    results = db_klass.with_interval_and_time_range(interval, performance_report_time_range)
                       .where(where_clause)
                       .where(options[:where_clause])
-                      .where(exp_sql)
                       .includes(get_include_for_find)
-                      .includes(exp_includes || [])
+                      .references(db_klass.includes_to_references(get_include))
                       .limit(options[:limit])
 
+    # Rbac will only add miq_expression for hourly report. It will not work properly for daily because many values are rolled up from hourly.
     results = Rbac.filtered(results, :class        => db,
                                      :filter       => conditions,
                                      :userid       => options[:userid],
@@ -311,7 +335,8 @@ module MiqReport::Generator
     rbac_opts = options.merge(
       :targets          => targets,
       :filter           => conditions,
-      :include_for_find => get_include_for_find,
+      :include_for_find => get_include_for_find_rbac,
+      :references       => get_include_rbac,
       :where_clause     => where_clause,
       :skip_counts      => true
     )
@@ -354,7 +379,7 @@ module MiqReport::Generator
 
     curr_tz = Time.zone # Save current time zone setting
     userid = options[:userid].split("|").first if options[:userid]
-    user = User.find_by_userid(userid) if userid
+    user = User.lookup_by_userid(userid) if userid
 
     # TODO: user is nil from MiqWidget#generate_report_result due to passing the username as the second part of :userid, such as widget_id_735|admin...
     # Looks like widget generation for a user doesn't expect multiple timezones, could be an issue with MiqGroups.
@@ -517,7 +542,7 @@ module MiqReport::Generator
             if tag == "_none_"
               tags2desc[tag] = "[None]"
             else
-              entry = Classification.find_by_name([performance[:group_by_category], tag].join("/"))
+              entry = Classification.lookup_by_name([performance[:group_by_category], tag].join("/"))
               tags2desc[tag] = entry.nil? ? tag.titleize : entry.description
             end
           end
@@ -839,7 +864,7 @@ module MiqReport::Generator
     res = task.miq_report_result
     nh = {:miq_task_id => taskid, :scheduled_on => at}
     _log.info("Updating report results with hash: [#{nh.inspect}]")
-    res.update_attributes(nh)
+    res.update(nh)
     _log.info("Finished creating report result with id [#{res.id}] for report id: [#{id}], name: [#{name}]")
 
     notify_user_of_report(res_last_run_on, res, options) if options[:send_email]
@@ -875,7 +900,7 @@ module MiqReport::Generator
   end
 
   def get_time_zone(default_tz = nil)
-    time_profile ? time_profile.tz || tz || default_tz : tz || default_tz
+    time_profile&.tz || tz || default_tz
   end
 
   private
@@ -909,6 +934,9 @@ module MiqReport::Generator
   end
 
   def custom_results_method
-    @custom_results_method ||= db_options && db_options[:rpt_type] ? "build_results_for_report_#{db_options[:rpt_type]}" : nil
+    return @custom_results_method if defined?(@custom_results_method)
+
+    db_rpt_type = db_options && db_options[:rpt_type]
+    @custom_results_method = db_rpt_type ? "build_results_for_report_#{db_rpt_type}" : nil
   end
 end

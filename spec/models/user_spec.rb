@@ -1,4 +1,4 @@
-describe User do
+RSpec.describe User do
   context "validations" do
     it "should ensure presence of name" do
       expect(FactoryBot.build(:user, :name => nil)).not_to be_valid
@@ -392,18 +392,18 @@ describe User do
     end
 
     it "self service user" do
-      @user.update_attributes(:miq_groups => [@self_service_group])
-      @vm[1].update_attributes(:evm_owner => @user)
-      @vm[2].update_attributes(:miq_group => @self_service_group)
+      @user.update(:miq_groups => [@self_service_group])
+      @vm[1].update(:evm_owner => @user)
+      @vm[2].update(:miq_group => @self_service_group)
 
       expect(accessible_vms.size).to eq(2)
     end
 
     it "limited self service user" do
-      @user.update_attributes(:miq_groups => [@limited_self_service_group])
-      @vm[1].update_attributes(:evm_owner => @user)
-      @vm[2].update_attributes(:miq_group => @self_service_group)
-      @vm[3].update_attributes(:miq_group => @limited_self_service_group)
+      @user.update(:miq_groups => [@limited_self_service_group])
+      @vm[1].update(:evm_owner => @user)
+      @vm[2].update(:miq_group => @self_service_group)
+      @vm[3].update(:miq_group => @limited_self_service_group)
 
       expect(accessible_vms.size).to eq(1)
     end
@@ -459,15 +459,32 @@ describe User do
     end
   end
 
-  describe ".find_by_lower_email" do
+  describe ".lookup_by_lower_email" do
     it "uses cache" do
       u = FactoryBot.build(:user_with_email)
-      expect(User.find_by_lower_email(u.email.upcase, u)).to eq(u)
+      expect(User.lookup_by_lower_email(u.email.upcase, u)).to eq(u)
     end
 
     it "finds in the table" do
       u = FactoryBot.create(:user_with_email)
-      expect(User.find_by_lower_email(u.email.upcase)).to eq(u)
+      expect(User.lookup_by_lower_email(u.email.upcase)).to eq(u)
+    end
+  end
+
+  describe ".lookup_by_email" do
+    it "looks up user by email" do
+      u = FactoryBot.create(:user_with_email)
+
+      expect(User.lookup_by_email(u.email)).to eq(u)
+    end
+  end
+
+  describe ".lookup_by_userid" do
+    it "looks up user by email" do
+      u = FactoryBot.create(:user)
+
+      expect(User.lookup_by_userid(u.userid)).to eq(u)
+      expect(User.lookup_by_userid!(u.userid)).to eq(u)
     end
   end
 

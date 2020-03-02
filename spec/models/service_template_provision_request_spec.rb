@@ -1,4 +1,4 @@
-describe ServiceTemplateProvisionRequest do
+RSpec.describe ServiceTemplateProvisionRequest do
   let(:admin) { FactoryBot.create(:user_admin) }
   context "with multiple tasks" do
     before do
@@ -67,9 +67,9 @@ describe ServiceTemplateProvisionRequest do
     end
 
     it "finished state" do
-      @task_1.update_attributes(:state => "finished")
+      @task_1.update(:state => "finished")
       @task_1_1.update_and_notify_parent(:state => "finished", :status => "Ok", :message => "Test Message")
-      @task_2.update_attributes(:state => "finished")
+      @task_2.update(:state => "finished")
       @task_2_1.update_and_notify_parent(:state => "finished", :status => "Ok", :message => "Test Message")
       @request.reload
       expect(@request.message).to eq("Request complete")

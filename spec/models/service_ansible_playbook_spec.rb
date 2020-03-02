@@ -1,6 +1,6 @@
-describe(ServiceAnsiblePlaybook) do
+RSpec.describe(ServiceAnsiblePlaybook) do
   let(:runner_job)      { FactoryBot.create(:embedded_ansible_job) }
-  let(:runner_job_temp) { FactoryBot.create(:ansible_configuration_script) }
+  let(:playbook)        { FactoryBot.create(:embedded_playbook) }
   let(:basic_service)   { FactoryBot.create(:service_ansible_playbook, :options => config_info_options) }
   let(:service)         { FactoryBot.create(:service_ansible_playbook, :options => config_info_options.merge(dialog_options)) }
   let(:action)          { ResourceAction::PROVISION }
@@ -13,12 +13,10 @@ describe(ServiceAnsiblePlaybook) do
   let(:encrypted_val2)  { ManageIQ::Password.encrypt(decrpyted_val + "new") }
 
   let(:loaded_service) do
-    service_template = FactoryBot.create(:service_template_ansible_playbook)
-    service_template.resource_actions.build(:action => action, :configuration_template => runner_job_temp)
-    service_template.save!
+    service_template = FactoryBot.create(:service_template_ansible_playbook, :options => config_info_options)
     FactoryBot.create(:service_ansible_playbook,
-                       :options          => provision_options.merge(config_info_options),
-                       :service_template => service_template)
+                      :options          => provision_options.merge(config_info_options),
+                      :service_template => service_template)
   end
 
   let(:executed_service) do
@@ -47,7 +45,7 @@ describe(ServiceAnsiblePlaybook) do
           :hosts               => "default_host1,default_host2",
           :credential_id       => credential_0.id,
           :vault_credential_id => credential_3.id,
-          :playbook_id         => 10,
+          :playbook_id         => playbook.id,
           :execution_ttl       => "5",
           :verbosity           => "3",
           :become_enabled      => true,
@@ -86,7 +84,7 @@ describe(ServiceAnsiblePlaybook) do
       service_options = service.options
       service_options[:config_info][:retirement] = service_options[:config_info][:provision]
       service_options[:config_info][:retirement][:remove_resources] = remove_resources
-      service.update_attributes(:options => service_options)
+      service.update(:options => service_options)
       expect(service.retain_resources_on_retirement?).to eq(!can_children_be_retired?)
     end
   end
@@ -159,7 +157,7 @@ describe(ServiceAnsiblePlaybook) do
         before do
           service_options = service.options
           service_options[:config_info][:retirement] = service_options[:config_info][:provision]
-          service.update_attributes(:options => service_options)
+          service.update(:options => service_options)
         end
 
         it 'ignores dialog options' do
@@ -200,15 +198,15 @@ describe(ServiceAnsiblePlaybook) do
     before do
       FactoryBot.create(:miq_region, :region => ApplicationRecord.my_region_number)
       miq_request_task = FactoryBot.create(:miq_request_task, :miq_request => FactoryBot.create(:service_template_provision_request))
-      miq_request_task.update_attributes(:options => {:request_options => {:manageiq_extra_vars => control_extras}})
-      loaded_service.update_attributes(:evm_owner        => FactoryBot.create(:user_with_group),
+      miq_request_task.update(:options => {:request_options => {:manageiq_extra_vars => control_extras}})
+      loaded_service.update(:evm_owner        => FactoryBot.create(:user_with_group),
                                        :miq_group        => FactoryBot.create(:miq_group),
                                        :miq_request_task => miq_request_task)
     end
 
     it 'creates an Ansible Runner job' do
       expect(ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job).to receive(:create_job) do |jobtemp, opts|
-        expect(jobtemp).to eq(runner_job_temp)
+        expect(jobtemp).to eq(playbook)
         exposed_miq = %w(api_url api_token service user group X_MIQ_Group request_task request) + control_extras.keys
         exposed_connection = %w(url token X_MIQ_Group)
         expect(opts[:extra_vars].delete('manageiq').keys).to include(*exposed_miq)
@@ -226,6 +224,27 @@ describe(ServiceAnsiblePlaybook) do
         :configuration_script_base_id => config_info_options.fetch_path(:config_info, :provision, :playbook_id)
       }
       expect(loaded_service.job(action)).to have_attributes(expected_job_attributes)
+    end
+
+    it 'uses automate timeout if no execution_ttl' do
+      expect(ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job).to receive(:create_job) do |_jobtemp, opts|
+        expect(opts[:execution_ttl]).to eq(77)
+        runner_job
+      end
+      expect(loaded_service.options[:provision_job_options][:execution_ttl]).to be nil
+      loaded_service.options[:provision_automate_timeout] = 77
+      loaded_service.launch_ansible_job(action)
+    end
+
+    it 'uses specified execution_ttl' do
+      timeout = config_info_options.dig(:config_info, :provision, :execution_ttl)
+      expect(ManageIQ::Providers::EmbeddedAnsible::AutomationManager::Job).to receive(:create_job) do |_jobtemp, opts|
+        expect(opts[:execution_ttl]).to eq(timeout)
+        runner_job
+      end
+      loaded_service.options[:provision_job_options][:execution_ttl] = timeout
+      loaded_service.options[:provision_automate_timeout] = 77
+      loaded_service.launch_ansible_job(action)
     end
   end
 
@@ -264,7 +283,7 @@ describe(ServiceAnsiblePlaybook) do
 
   describe '#on_error' do
     it 'handles retirement error' do
-      executed_service.update_attributes(:retirement_state => 'Retiring')
+      executed_service.update(:retirement_state => 'Retiring')
       expect(runner_job).to receive(:refresh_ems)
       executed_service.on_error(ResourceAction::RETIREMENT)
       expect(executed_service.retirement_state).to eq('error')

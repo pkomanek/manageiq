@@ -1,4 +1,4 @@
-describe ExtManagementSystem do
+RSpec.describe ExtManagementSystem do
   describe ".with_tenant" do
     # tenant_root
     #   \___ tenant_eye_bee_em (service_template_eye_bee_em)
@@ -147,10 +147,11 @@ describe ExtManagementSystem do
   end
 
   it "#total_storages" do
-    storage1 = FactoryBot.create(:storage)
-    storage2 = FactoryBot.create(:storage)
-
     ems = FactoryBot.create(:ems_vmware)
+
+    storage1 = FactoryBot.create(:storage, :ems_id => ems.id)
+    storage2 = FactoryBot.create(:storage, :ems_id => ems.id)
+
     FactoryBot.create(
       :host_vmware,
       :storages              => [storage1, storage2],
@@ -351,28 +352,28 @@ describe ExtManagementSystem do
     it "#total_vms_off" do
       expect(@ems.total_vms_off).to eq(0)
 
-      @ems.vms.each { |v| v.update_attributes(:raw_power_state => "poweredOff") }
+      @ems.vms.each { |v| v.update(:raw_power_state => "poweredOff") }
       expect(@ems.total_vms_off).to eq(2)
     end
 
     it "#total_vms_unknown" do
       expect(@ems.total_vms_unknown).to eq(0)
 
-      @ems.vms.each { |v| v.update_attributes(:raw_power_state => "unknown") }
+      @ems.vms.each { |v| v.update(:raw_power_state => "unknown") }
       expect(@ems.total_vms_unknown).to eq(2)
     end
 
     it "#total_vms_never" do
       expect(@ems.total_vms_never).to eq(0)
 
-      @ems.vms.each { |v| v.update_attributes(:raw_power_state => "never") }
+      @ems.vms.each { |v| v.update(:raw_power_state => "never") }
       expect(@ems.total_vms_never).to eq(2)
     end
 
     it "#total_vms_suspended" do
       expect(@ems.total_vms_suspended).to eq(0)
 
-      @ems.vms.each { |v| v.update_attributes(:raw_power_state => "suspended") }
+      @ems.vms.each { |v| v.update(:raw_power_state => "suspended") }
       expect(@ems.total_vms_suspended).to eq(2)
     end
 
@@ -711,10 +712,15 @@ describe ExtManagementSystem do
 
   describe ".raw_connect?" do
     it "returns true if validation was successful" do
-      connection = double
-      allow(ManageIQ::Providers::Amazon::CloudManager).to receive(:raw_connect).and_return(connection)
+      allow(described_class).to receive(:raw_connect).and_return(double)
+      expect(described_class.raw_connect?).to eq(true)
+    end
+  end
 
-      expect(ManageIQ::Providers::Amazon::CloudManager.raw_connect?).to eq(true)
+  context "raw_connect" do
+    it 'defines a raw_connect method which raises an error' do
+      expect(described_class).to respond_to(:raw_connect)
+      expect { described_class.raw_connect }.to raise_error(NotImplementedError, _("must be implemented in a subclass"))
     end
   end
 
@@ -739,6 +745,16 @@ describe ExtManagementSystem do
       expect(result.size).to eq(2)
       expect(result[0]).to eq(%w(region zone kind ems containers))
       expect(result[1][4..-1]).to eq([2])
+    end
+  end
+
+  context "#queue_name_for_ems_operations" do
+    it "defaults to 'generic' as the queue name for ems operations" do
+      ems_cloud = FactoryBot.create(:ems_cloud)
+      ems_container = FactoryBot.create(:ems_container)
+
+      expect(ems_cloud.queue_name_for_ems_operations).to eql('generic')
+      expect(ems_container.queue_name_for_ems_operations).to eql('generic')
     end
   end
 end

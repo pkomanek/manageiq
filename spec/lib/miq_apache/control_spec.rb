@@ -1,4 +1,4 @@
-describe MiqApache::Control do
+RSpec.describe MiqApache::Control do
   it "should run_apache_cmd with start when calling start" do
     expect(MiqApache::Control).to receive(:run_apache_cmd).with('start')
     MiqApache::Control.start
@@ -34,7 +34,7 @@ describe MiqApache::Control do
     allow(File).to receive(:exist?).and_return(true)
     $log = Logger.new(STDOUT) unless $log
     allow($log).to receive(:debug?).and_return(false)
-    expect(MiqUtil).to receive(:runcmd).with("apachectl #{cmd}")
+    expect(MiqUtil).to receive(:runcmd).with("apachectl", :params => [[cmd]])
     MiqApache::Control.start
   end
 
@@ -43,7 +43,7 @@ describe MiqApache::Control do
     allow(File).to receive(:exist?).and_return(true)
     $log = Logger.new(STDOUT) unless $log
     allow($log).to receive(:debug?).and_return(true)
-    expect(MiqUtil).to receive(:runcmd).with("apachectl #{cmd}")
+    expect(MiqUtil).to receive(:runcmd).with("apachectl", :params => [[cmd]])
     MiqApache::Control.start
   end
 

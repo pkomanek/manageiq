@@ -1,8 +1,4 @@
 class InfraConversionJob < Job
-  def self.create_job(options)
-    super(name, options)
-  end
-
   #
   # State-transition diagram:
   #                              :poll_conversion                         :poll_post_stage
@@ -32,23 +28,45 @@ class InfraConversionJob < Job
     {
       :initializing                         => {'initialize'         => 'waiting_to_start'},
       :start                                => {'waiting_to_start'   => 'started'},
-      :remove_snapshots                     => {'started'            => 'removing_snapshots'},
-      :poll_remove_snapshots_complete       => {'removing_snapshots' => 'removing_snapshots'},
+      :start_precopying_disks               => {'started'            => 'precopying_disks'},
+      :poll_precopying_disks                => {'precopying_disks'   => 'precopying_disks'},
       :wait_for_ip_address                  => {
-        'removing_snapshots'     => 'waiting_for_ip_address',
+        'started'                => 'waiting_for_ip_address',
+        'precopying_disks'       => 'waiting_for_ip_address',
+        'powering_on_vm'         => 'waiting_for_ip_address',
         'waiting_for_ip_address' => 'waiting_for_ip_address'
       },
       :run_migration_playbook               => {'waiting_for_ip_address' => 'running_migration_playbook'},
       :poll_run_migration_playbook_complete => {'running_migration_playbook' => 'running_migration_playbook'},
       :shutdown_vm                          => {'running_migration_playbook' => 'shutting_down_vm' },
       :poll_shutdown_vm_complete            => {'shutting_down_vm' => 'shutting_down_vm'},
+      :transform_vm                         => {'shutting_down_vm' => 'transforming_vm'},
+      :poll_transform_vm_complete           => {'transforming_vm' => 'transforming_vm'},
+      :inventory_refresh                    => {'transforming_vm' => 'waiting_for_inventory_refresh'},
+      :poll_inventory_refresh_complete      => {'waiting_for_inventory_refresh' => 'waiting_for_inventory_refresh'},
+      :apply_right_sizing                   => {'waiting_for_inventory_refresh' => 'applying_right_sizing'},
+      :restore_vm_attributes                => {'applying_right_sizing' => 'restoring_vm_attributes'},
+      :power_on_vm                          => {
+        'restoring_vm_attributes' => 'powering_on_vm',
+        'aborting_virtv2v'        => 'powering_on_vm'
+      },
+      :poll_power_on_vm_complete            => {'powering_on_vm' => 'powering_on_vm'},
+      :mark_vm_migrated                     => {
+        'powering_on_vm'             => 'marking_vm_migrated',
+        'running_migration_playbook' => 'marking_vm_migrated'
+      },
       :poll_automate_state_machine          => {
-        'shutting_down_vm'    => 'running_in_automate',
+        'powering_on_vm'      => 'running_in_automate',
+        'marking_vm_migrated' => 'running_in_automate',
         'running_in_automate' => 'running_in_automate'
       },
       :finish                               => {'*'                => 'finished'},
       :abort_job                            => {'*'                => 'aborting'},
       :cancel                               => {'*'                => 'canceling'},
+      :abort_virtv2v                        => {
+        '*'                => 'aborting_virtv2v',
+        'aborting_virtv2v' => 'aborting_virtv2v'
+      },
       :error                                => {'*'                => '*'}
     }
   end
@@ -61,31 +79,69 @@ class InfraConversionJob < Job
   #   }
   def state_settings
     @state_settings ||= {
-      :removing_snapshots         => {
-        :description => 'Remove snapshosts',
-        :weight      => 5,
-        :max_retries => 4.hours / state_retry_interval
+      :precopying_disks              => {
+        :description => 'Precopying disks',
+        :max_retries => 36.hours / state_retry_interval
       },
-      :waiting_for_ip_address     => {
+      :waiting_for_ip_address        => {
         :description => 'Waiting for VM IP address',
+        :weight      => 2,
+        :max_retries => 1.hour / state_retry_interval
+      },
+      :running_migration_playbook    => {
+        :description => "Running #{migration_phase}-migration playbook",
+        :weight      => 15,
+        :max_retries => 6.hours / state_retry_interval
+      },
+      :shutting_down_vm              => {
+        :description => "Shutting down virtual machine",
+        :weight      => 2,
+        :max_retries => 15.minutes / state_retry_interval
+      },
+      :transforming_vm               => {
+        :description => "Converting disks",
+        :weight      => 60,
+        :max_retries => 1.day / state_retry_interval
+      },
+      :waiting_for_inventory_refresh => {
+        :description => "Identify destination VM",
         :weight      => 1,
         :max_retries => 1.hour / state_retry_interval
       },
-      :running_migration_playbook => {
-        :description => "Running #{migration_phase}-migration playbook",
-        :weight      => 10,
-        :max_retries => 6.hours / state_retry_interval
+      :applying_right_sizing         => {
+        :description => "Apply Right-Sizing Recommendation",
+        :weight      => 1
       },
-      :shutting_down_vm           => {
-        :description => "Shutting down virtual machine",
-        :weight      => 1,
+      :restoring_vm_attributes       => {
+        :description => "Restore VM Attributes",
+        :weight      => 1
+      },
+      :powering_on_vm                => {
+        :description => "Power on virtual machine",
+        :weight      => 2,
         :max_retries => 15.minutes / state_retry_interval
       },
-      :running_in_automate        => {
-        :max_retries => 36.hours / state_retry_interval
+      :marking_vm_migrated           => {
+        :description => "Virtual machine successfully migrated",
+        :weight      => 1
+      },
+      :aborting_virtv2v              => {
+        :description => "Abort virt-v2v operation",
+        :max_retries => 1.minute / state_retry_interval
+      },
+      :running_in_automate           => {
+        :max_retries => 1.hour / state_retry_interval
       }
     }
   end
+
+  # --- Override Job methods to handle cancelation properly  --- #
+
+  def self.current_job_timeout(_timeout_adjustment = 1)
+    36.hours
+  end
+
+  # ---           Job relationships helper methods           --- #
 
   def state_retry_interval
     @state_retry_interval ||= Settings.transformation.job.retry_interval || 15.seconds
@@ -105,17 +161,27 @@ class InfraConversionJob < Job
   end
 
   def destination_vm
-    return nil if migration_task.options[:destination_vm_id].nil?
+    @destination_vm ||= migration_task.destination
+  end
 
-    @destination_vm ||= Vm.find(migration_task.options[:destination_vm_id]).tap do |vm|
-      raise "No Vm in VMDB with id #{migration_task.options[:destination_vm_id]}" if vm.nil?
-    end
+  def destination_vm_ems_ref(uuid)
+    send("destination_vm_ems_ref_#{migration_task.destination_ems.emstype}", uuid)
+  end
+
+  def destination_vm_ems_ref_rhevm(uuid)
+    "/api/vms/#{uuid}"
+  end
+
+  def destination_vm_ems_ref_openstack(uuid)
+    uuid
   end
 
   def target_vm
-    return @target_vm = source_vm if migration_phase == 'pre'
+    return @target_vm = source_vm if migration_phase == 'pre' || migration_task.canceling?
     return @target_vm = destination_vm if migration_phase == 'post'
   end
+
+  # ---           State transition helper methods            --- #
 
   def on_entry(state_hash, _)
     state_hash || {
@@ -151,24 +217,41 @@ class InfraConversionJob < Job
     state_hash
   end
 
+  def task_progress
+    migration_task.options[:progress] || {:current_state => state, :status => "ok", :percent => 0.0, :states => {}}
+  end
+
   def update_migration_task_progress(state_phase, state_progress = nil)
-    progress = migration_task.options[:progress] || { :current_state => state, :percent => 0.0, :states => {} }
+    progress = task_progress
     state_hash = send(state_phase, progress[:states][state.to_sym], state_progress)
     progress[:states][state.to_sym] = state_hash
-    progress[:current_description] = state_settings[state.to_sym][:description] if state_phase == :on_entry && state_settings[state.to_sym][:description].present?
-    progress[:percent] += state_hash[:percent] * state_settings[state.to_sym][:weight] / 100.0 if state_settings[state.to_sym][:weight].present?
+    if state_phase == :on_entry
+      progress[:current_state] = state
+      progress[:current_description] = state_settings[state.to_sym][:description] if state_settings[state.to_sym][:description].present?
+    end
+    progress[:percent] = progress[:states].map { |k, v| v[:percent] * (state_settings[k.to_sym][:weight] || 0) / 100.0 }.inject(0) { |sum, x| sum + x }
     migration_task.update_transformation_progress(progress)
+    abort_conversion('Migration cancelation requested', 'ok') if migration_task.cancel_requested?
   end
 
   # Temporary method to allow switching from InfraConversionJob to Automate.
   # In Automate, another method waits for workflow_runner to be 'automate'.
   def handover_to_automate
+    if migration_task.canceling?
+      migration_task.canceled
+      queue_signal(:abort_job)
+    end
+
     migration_task.update_options(:workflow_runner => 'automate')
   end
 
   def abort_conversion(message, status)
-    migration_task.cancel
-    queue_signal(:abort_job, message, status)
+    migration_task.canceling
+    progress = task_progress
+    progress[:current_description] = "Migration failed: #{message}. Cancelling"
+    progress[:status] = "error"
+    migration_task.update_options(:progress => progress)
+    queue_signal(:abort_virtv2v)
   end
 
   def polling_timeout
@@ -180,31 +263,21 @@ class InfraConversionJob < Job
   end
 
   def queue_signal(*args, deliver_on: nil)
-    MiqQueue.put(
-      :class_name  => self.class.name,
-      :method_name => "signal",
-      :instance_id => id,
-      :role        => "ems_operations",
-      :zone        => zone,
-      :task_id     => guid,
-      :args        => args,
-      :deliver_on  => deliver_on
-    )
+    super(*args, :role => "ems_operations", :deliver_on => deliver_on, :server_guid => MiqServer.my_server.guid)
   end
 
   def prep_message(contents)
     "MiqRequestTask id=#{migration_task.id}, InfraConversionJob id=#{id}. #{contents}"
   end
 
-  def order_ansible_playbook_service
-    service_template = migration_task.send("#{migration_phase}_ansible_playbook_service_template")
-    return if service_template.nil?
+  # ---              Functional helper methods               --- #
 
-    service_dialog_options = {
-      :credentials => service_template.config_info[:provision][:credential_id],
-      :hosts       => target_vm.ipaddresses.first || service_template.config_info[:provision][:hosts]
-    }
-    service_template.provision_request(migration_task.userid.to_i, service_dialog_options)
+  def apply_right_sizing_cpu(mode)
+    destination_vm.set_number_of_cpus(source_vm.send("#{mode}_recommended_vcpus"))
+  end
+
+  def apply_right_sizing_memory(mode)
+    destination_vm.set_memory(source_vm.send("#{mode}_recommended_mem"))
   end
 
   # --- Methods that implement the state machine transitions --- #
@@ -214,39 +287,31 @@ class InfraConversionJob < Job
   def start
     migration_task.update!(:state => 'migrate')
     migration_task.update_options(:migration_phase => 'pre')
-    queue_signal(:remove_snapshots)
+    migration_task.warm_migration? ? queue_signal(:start_precopying_disks) : queue_signal(:wait_for_ip_address)
   end
 
-  def remove_snapshots
+  def start_precopying_disks
     update_migration_task_progress(:on_entry)
-    if migration_task.source.supports_remove_all_snapshots?
-      context[:async_task_id_removing_snapshots] = migration_task.source.remove_all_snapshots_queue(migration_task.userid.to_i)
-      update_migration_task_progress(:on_exit)
-      return queue_signal(:poll_remove_snapshots_complete, :deliver_on => Time.now.utc + state_retry_interval)
-    end
-
-    update_migration_task_progress(:on_exit)
-    queue_signal(:wait_for_ip_address)
+    migration_task.run_conversion
+    queue_signal(:poll_precopying_disks, :deliver_on => Time.now.utc + state_retry_interval)
   rescue StandardError => error
     update_migration_task_progress(:on_error)
     abort_conversion(error.message, 'error')
   end
 
-  def poll_remove_snapshots_complete
+  def poll_precopying_disks
     update_migration_task_progress(:on_entry)
-    raise 'Removing snapshots timed out' if polling_timeout
+    return abort_conversion('Precopying disks timed out', 'error') if polling_timeout
 
-    async_task = MiqTask.find(context[:async_task_id_removing_snapshots])
+    migration_task.get_conversion_state
 
-    if async_task.state == MiqTask::STATE_FINISHED
-      raise async_task.message unless async_task.status == MiqTask::STATUS_OK
-
-      update_migration_task_progress(:on_exit)
-      return queue_signal(:wait_for_ip_address)
+    unless migration_task.miq_request.options[:cutover_datetime].present? && migration_task.miq_request.options[:cutover_datetime] < Time.now.utc
+      update_migration_task_progress(:on_retry)
+      return queue_signal(:poll_precopying_disks, :deliver_on => Time.now.utc + state_retry_interval)
     end
 
-    update_migration_task_progress(:on_retry)
-    queue_signal(:poll_remove_snapshots_complete, :deliver_on => Time.now.utc + state_retry_interval)
+    update_migration_task_progress(:on_exit)
+    queue_signal(:wait_for_ip_address)
   rescue StandardError => error
     update_migration_task_progress(:on_error)
     abort_conversion(error.message, 'error')
@@ -259,9 +324,13 @@ class InfraConversionJob < Job
     # If the target VM is powered off, we won't get an IP address, so no need to wait.
     # We don't block powered off VMs, because the playbook could still be relevant.
     if target_vm.power_state == 'on'
-      if target_vm.ipaddresses.empty?
-        update_migration_task_progress(:on_retry)
-        return queue_signal(:wait_for_ip_address)
+      # If the source VM didn't report IP addresses during pre-flight check, there's no need to wait.
+      # We don't block VMsi with no IP address, because the playbook could still be relevant.
+      unless migration_task.options[:source_vm_ipaddresses].empty?
+        if target_vm.ipaddresses.empty?
+          update_migration_task_progress(:on_retry)
+          return queue_signal(:wait_for_ip_address)
+        end
       end
     end
 
@@ -276,27 +345,32 @@ class InfraConversionJob < Job
     update_migration_task_progress(:on_entry)
     service_template = migration_task.send("#{migration_phase}_ansible_playbook_service_template")
     unless service_template.nil?
+      user_id = User.find_by(:userid => migration_task.userid).id
       service_dialog_options = {
-        :credentials => service_template.config_info[:provision][:credential_id],
-        :hosts       => target_vm.ipaddresses.first || service_template.config_info[:provision][:hosts]
+        :credential => service_template.config_info[:provision][:credential_id],
+        :hosts      => target_vm.ipaddresses.first || service_template.config_info[:provision][:hosts]
       }
-      context["#{migration_phase}_migration_playbook_service_request_id".to_sym] = service_template.provision_request(migration_task.userid.to_i, service_dialog_options).id
+      migration_task.update_options("#{migration_phase}_migration_playbook_service_request_id".to_sym => service_template.provision_request(user_id, service_dialog_options).id)
       update_migration_task_progress(:on_exit)
       return queue_signal(:poll_run_migration_playbook_complete, :deliver_on => Time.now.utc + state_retry_interval)
     end
 
     update_migration_task_progress(:on_exit)
-    queue_signal(:shutdown_vm)
+    return queue_signal(:shutdown_vm) if migration_phase == 'pre'
+
+    queue_signal(:mark_vm_migrated)
   rescue StandardError => error
     update_migration_task_progress(:on_error)
-    abort_conversion(error.message, 'error')
+    return abort_conversion(error.message, 'error') if migration_phase == 'pre'
+
+    queue_signal(:mark_vm_migrated)
   end
 
   def poll_run_migration_playbook_complete
     update_migration_task_progress(:on_entry)
     return abort_conversion('Running migration playbook timed out', 'error') if polling_timeout
 
-    service_request = ServiceTemplateProvisionRequest.find(context["#{migration_phase}_migration_playbook_service_request_id".to_sym])
+    service_request = ServiceTemplateProvisionRequest.find(migration_task.options["#{migration_phase}_migration_playbook_service_request_id".to_sym])
     playbooks_status = migration_task.get_option(:playbooks) || {}
     playbooks_status[migration_phase] = { :job_state => service_request.request_state }
     migration_task.update_options(:playbooks => playbooks_status)
@@ -308,14 +382,17 @@ class InfraConversionJob < Job
       raise "Ansible playbook has failed (migration_phase=#{migration_phase})" if service_request.status == 'Error' && migration_phase == 'pre'
 
       update_migration_task_progress(:on_exit)
-      return queue_signal(:shutdown_vm)
+      return queue_signal(:shutdown_vm) if migration_phase == 'pre'
+      return queue_signal(:mark_vm_migrated)
     end
 
     update_migration_task_progress(:on_retry)
     queue_signal(:poll_run_migration_playbook_complete, :deliver_on => Time.now.utc + state_retry_interval)
   rescue StandardError => error
     update_migration_task_progress(:on_error)
-    abort_conversion(error.message, 'error')
+    return abort_conversion(error.message, 'error') if migration_phase == 'pre'
+
+    queue_signal(:mark_vm_migrated)
   end
 
   def shutdown_vm
@@ -331,8 +408,7 @@ class InfraConversionJob < Job
     end
 
     update_migration_task_progress(:on_exit)
-    handover_to_automate
-    queue_signal(:poll_automate_state_machine)
+    queue_signal(:transform_vm)
   rescue StandardError => error
     update_migration_task_progress(:on_error)
     abort_conversion(error.message, 'error')
@@ -344,8 +420,7 @@ class InfraConversionJob < Job
 
     if target_vm.power_state == 'off'
       update_migration_task_progress(:on_exit)
-      handover_to_automate
-      return queue_signal(:poll_automate_state_machine)
+      return queue_signal(:transform_vm)
     end
 
     update_migration_task_progress(:on_retry)
@@ -353,6 +428,208 @@ class InfraConversionJob < Job
   rescue StandardError => error
     update_migration_task_progress(:on_error)
     abort_conversion(error.message, 'error')
+  end
+
+  def transform_vm
+    update_migration_task_progress(:on_entry)
+    migration_task.run_conversion unless migration_task.warm_migration?
+    migration_task.cutover
+    update_migration_task_progress(:on_exit)
+    queue_signal(:poll_transform_vm_complete, :deliver_on => Time.now.utc + state_retry_interval)
+  rescue StandardError => error
+    update_migration_task_progress(:on_error)
+    abort_conversion(error.message, 'error')
+  end
+
+  def poll_transform_vm_complete
+    update_migration_task_progress(:on_entry)
+    return abort_conversion('Converting disks timed out', 'error') if polling_timeout
+
+    migration_task.get_conversion_state
+    case migration_task.options[:virtv2v_status]
+    when 'active'
+      virtv2v_disks = migration_task.options[:virtv2v_disks]
+      converted_disks = virtv2v_disks.reject { |disk| disk[:percent].zero? }
+      if converted_disks.empty?
+        message = 'Disk transformation is initializing.'
+        percent = 1
+      else
+        percent = 0
+        converted_disks.each { |disk| percent += (disk[:percent].to_f * disk[:weight].to_f / 100.0) }
+        message = "Converting disk #{converted_disks.length} / #{virtv2v_disks.length} [#{percent.round(2)}%]."
+      end
+      update_migration_task_progress(:on_retry, :message => message, :percent => percent)
+      queue_signal(:poll_transform_vm_complete, :deliver_on => Time.now.utc + state_retry_interval)
+    when 'failed'
+      raise migration_task.options[:virtv2v_message]
+    when 'succeeded'
+      update_migration_task_progress(:on_exit)
+      queue_signal(:inventory_refresh)
+    end
+  rescue StandardError => error
+    update_migration_task_progress(:on_error)
+    abort_conversion(error.message, 'error')
+  end
+
+  def inventory_refresh
+    update_migration_task_progress(:on_entry)
+    if migration_task.options[:destination_vm_uuid].present?
+      target = InventoryRefresh::Target.new(
+        :association => :vms,
+        :manager_ref => {:ems_ref => destination_vm_ems_ref(migration_task.options[:destination_vm_uuid])},
+        :manager     => migration_task.destination_ems
+      )
+      EmsRefresh.queue_refresh(target)
+    end
+    update_migration_task_progress(:on_exit)
+    queue_signal(:poll_inventory_refresh_complete, :deliver_on => Time.now.utc + state_retry_interval)
+  rescue
+    update_migration_task_progress(:on_error)
+    queue_signal(:poll_inventory_refresh_complete)
+  end
+
+  # This methods waits for the destination EMS inventory to refresh.
+  # It updates the migration_task.destination relationship with the create VM.
+  # We don't force the EMS refresh and rather allow 1 hour to get it.
+  def poll_inventory_refresh_complete
+    update_migration_task_progress(:on_entry)
+    return abort_conversion('Identify destination VM timed out', 'error') if polling_timeout
+
+    destination_vm = Vm.find_by(:name => migration_task.source.name, :ems_id => migration_task.destination_ems.id)
+    if destination_vm.nil?
+      update_migration_task_progress(:on_retry)
+      return queue_signal(:poll_inventory_refresh_complete, :deliver_on => Time.now.utc + state_retry_interval)
+    end
+
+    migration_task.update!(:destination => destination_vm)
+    migration_task.update_options(:migration_phase => 'post')
+    update_migration_task_progress(:on_exit)
+    queue_signal(:apply_right_sizing)
+  rescue StandardError => error
+    update_migration_task_progress(:on_error)
+    abort_conversion(error.message, 'error')
+  end
+
+  def apply_right_sizing
+    update_migration_task_progress(:on_entry)
+
+    %i[cpu memory].each do |item|
+      right_sizing_mode = migration_task.send("#{item}_right_sizing_mode")
+      send("apply_right_sizing_#{item}", right_sizing_mode) if right_sizing_mode.present?
+    end
+
+    update_migration_task_progress(:on_exit)
+    queue_signal(:restore_vm_attributes)
+  rescue StandardError
+    update_migration_task_progress(:on_error)
+    queue_signal(:restore_vm_attributes)
+  end
+
+  def restore_vm_attributes
+    update_migration_task_progress(:on_entry)
+
+    # Transfer service link to destination VM
+    if source_vm.service
+      destination_vm.add_to_service(source_vm.service)
+      source_vm.direct_service.try(:remove_resource, source_vm)
+    end
+
+    # Copy tags and custom attributes from source VM
+    source_vm.tags.each do |tag|
+      next if tag.name =~ /^\/managed\/folder_path_/
+
+      tag_as_array = tag.name.split('/')
+      namespace = tag_as_array.shift
+      value = tag_as_array.pop
+      category = tag_as_array.join('/')
+      destination_vm.tag_add("#{category}/#{value}", :ns => namespace)
+    end
+    source_vm.miq_custom_keys.each { |ca| destination_vm.miq_custom_set(ca, source_vm.miq_custom_get(ca)) }
+
+    # Copy ownership from source VM
+    destination_vm.evm_owner = source_vm.evm_owner if source_vm.present?
+    destination_vm.miq_group = source_vm.miq_group if source_vm.miq_group.present?
+
+    # Copy retirement settings from source VM
+    destination_vm.retires_on = source_vm.retires_on if source_vm.retires_on.present?
+    destination_vm.retirement_warn = source_vm.retirement_warn if source_vm.retirement_warn.present?
+
+    # Save destination_vm in VMDB
+    destination_vm.save
+
+    update_migration_task_progress(:on_exit)
+    queue_signal(:power_on_vm)
+  rescue StandardError
+    update_migration_task_progress(:on_error)
+    queue_signal(:power_on_vm)
+  end
+
+  def power_on_vm
+    update_migration_task_progress(:on_entry)
+
+    if migration_task.options[:source_vm_power_state] == 'on' && target_vm.power_state != 'on'
+      target_vm.start
+      update_migration_task_progress(:on_exit)
+      return queue_signal(:poll_power_on_vm_complete, :deliver_on => Time.now.utc + state_retry_interval)
+    end
+
+    update_migration_task_progress(:on_exit)
+    return queue_signal(:wait_for_ip_address) if target_vm.power_state == 'on' && !migration_task.canceling?
+
+    if migration_task.canceling?
+      migration_task.canceled
+      handover_to_automate
+      return queue_signal(:poll_automate_state_machine)
+    end
+
+    queue_signal(:mark_vm_migrated)
+  rescue StandardError
+    update_migration_task_progress(:on_error)
+    migration_task.canceled if migration_task.canceling?
+    queue_signal(:poll_automate_state_machine)
+  end
+
+  def poll_power_on_vm_complete
+    update_migration_task_progress(:on_entry)
+    raise 'Powering on VM timed out' if polling_timeout
+
+    if target_vm.power_state == 'on'
+      update_migration_task_progress(:on_exit)
+      return queue_signal(:wait_for_ip_address) unless migration_task.canceling?
+
+      migration_task.canceled
+      handover_to_automate
+      return queue_signal(:poll_automate_state_machine)
+    end
+
+    update_migration_task_progress(:on_retry)
+    queue_signal(:poll_power_on_vm_complete, :deliver_on => Time.now.utc + state_retry_interval)
+  rescue StandardError
+    update_migration_task_progress(:on_error)
+    migration_task.canceled if migration_task.canceling?
+    handover_to_automate
+    queue_signal(:poll_automate_state_machine)
+  end
+
+  def mark_vm_migrated
+    update_migration_task_progress(:on_entry)
+    migration_task.mark_vm_migrated
+    handover_to_automate
+    queue_signal(:poll_automate_state_machine)
+    update_migration_task_progress(:on_exit)
+  end
+
+  def abort_virtv2v
+    virtv2v_runs = migration_task.options[:virtv2v_started_on].present? && migration_task.options[:virtv2v_finished_on].nil? && migration_task.options[:virtv2v_wrapper].present?
+    return queue_signal(:power_on_vm) unless virtv2v_runs
+
+    if polling_timeout
+      migration_task.kill_virtv2v('KILL')
+      return queue_signal(:power_on_vm)
+    end
+
+    migration_task.kill_virtv2v('TERM') if context["retries_#{state}".to_sym] == 1
+    queue_signal(:abort_virtv2v, :deliver_on => Time.now.utc + state_retry_interval)
   end
 
   def poll_automate_state_machine

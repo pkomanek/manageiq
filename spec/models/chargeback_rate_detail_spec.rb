@@ -1,4 +1,4 @@
-describe ChargebackRateDetail do
+RSpec.describe ChargebackRateDetail do
   let(:field) { FactoryBot.build(:chargeable_field) }
   describe "#chargeback_rate" do
     it "is invalid without a valid chargeback_rate" do
@@ -272,7 +272,7 @@ Monthly @ 5.0 + 2.5 per Megabytes from 5.0 to Infinity")
   end
 
   it "#show_rates" do
-    cbc = FactoryBot.create(:chargeback_rate_detail_currency, :code => "EUR")
+    cbc = FactoryBot.create(:currency, :code => "EUR")
 
     cbd = FactoryBot.build(:chargeback_rate_detail_fixed_compute_cost, :detail_currency => cbc)
     expect(cbd.show_rates).to eq("€ [Euro] / Day")

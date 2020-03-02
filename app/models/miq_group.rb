@@ -113,7 +113,7 @@ class MiqGroup < ApplicationRecord
         if group.entitlement.present? # Relation is read-only if present
           Entitlement.update(group.entitlement.id, :miq_user_role => tenant_role)
         else
-          group.update_attributes(:miq_user_role => tenant_role)
+          group.update(:miq_user_role => tenant_role)
         end
       end
     else
@@ -234,7 +234,7 @@ class MiqGroup < ApplicationRecord
   end
 
   def self.create_tenant_group(tenant)
-    tenant_full_name = (tenant.ancestors.map(&:name) + [tenant.name]).join("/")
+    tenant_full_name = (tenant.ancestors.map(&:name) + [tenant.name] + [tenant.id.to_s]).join("/")
 
     create_with(
       :description => "Tenant #{tenant_full_name} access"
@@ -304,7 +304,8 @@ class MiqGroup < ApplicationRecord
     throw :abort unless errors[:base].empty?
   end
 
+  # tell users that this group is goinga away - and the users should fix their current group
   def reset_current_group_for_users
-    User.where(:id => user_ids, :current_group_id => id).each(&:change_current_group)
+    User.where(:current_group_id => id).each(&:change_current_group)
   end
 end

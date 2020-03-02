@@ -12,7 +12,7 @@ class ServiceReconfigureTask < MiqRequestTask
   end
 
   def after_request_task_create
-    update_attributes(:description => get_description)
+    update(:description => get_description)
   end
 
   def deliver_to_automate(req_type = request_type, zone = nil)
@@ -60,6 +60,9 @@ class ServiceReconfigureTask < MiqRequestTask
     return if miq_request.state == 'finished'
 
     if ae_result == 'ok'
+      source.options[:dialog] = source.options[:dialog].merge(options[:dialog]) if options[:dialog]
+      source.save!
+
       update_and_notify_parent(:state   => "finished",
                                :status  => "Ok",
                                :message => "#{request_class::TASK_DESCRIPTION} completed")

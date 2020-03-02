@@ -7,13 +7,13 @@ module PerEmsTypeWorkerMixin
 
   module ClassMethods
     def workers
-      return 0 unless self.any_valid_ems_in_zone?
-      return (self.has_minimal_env_option? ? 1 : 0) if MiqServer.minimal_env?
-      workers_configured_count
+      return 0 unless any_valid_ems_in_zone?
+
+      super
     end
 
     def ems_class
-      ExtManagementSystem
+      parent
     end
 
     def emses_in_zone

@@ -57,22 +57,21 @@ class DialogField < ApplicationRecord
     :dialog_field_button,
     :dialog_field_tag_control,
     :dialog_field_radio_button,
-    :dialog_field_dynamic_list,
     # Enable when UI support is available
     # #:dialog_field_list_view      # Future
   ]
 
   DIALOG_FIELD_TYPES = {
-    "DialogFieldTextBox"         => _("Text Box"),
-    "DialogFieldTextAreaBox"     => _("Text Area Box"),
-    "DialogFieldCheckBox"        => _("Check Box"),
-    "DialogFieldDropDownList"    => _("Drop Down List"),
+    "DialogFieldTextBox"         => N_("Text Box"),
+    "DialogFieldTextAreaBox"     => N_("Text Area Box"),
+    "DialogFieldCheckBox"        => N_("Check Box"),
+    "DialogFieldDropDownList"    => N_("Drop Down List"),
     # Commented out next to field types until they can be implemented
     #    "DialogFieldButton" => "Button",
-    "DialogFieldTagControl"      => _("Tag Control"),
-    "DialogFieldDateControl"     => _("Date Control"),
-    "DialogFieldDateTimeControl" => _("Date/Time Control"),
-    "DialogFieldRadioButton"     => _("Radio Button")
+    "DialogFieldTagControl"      => N_("Tag Control"),
+    "DialogFieldDateControl"     => N_("Date Control"),
+    "DialogFieldDateTimeControl" => N_("Date/Time Control"),
+    "DialogFieldRadioButton"     => N_("Radio Button")
   }
 
   DIALOG_FIELD_DYNAMIC_CLASSES = %w(

@@ -1,4 +1,4 @@
-describe MiqRegion do
+RSpec.describe MiqRegion do
   let(:region) { FactoryBot.create(:miq_region, :region => ApplicationRecord.my_region_number) }
   # the first id from a region other than ours
   let(:external_region_id) do
@@ -66,10 +66,6 @@ describe MiqRegion do
       @db = FactoryBot.create(:miq_database)
       allow(MiqRegion).to receive_messages(:my_region_number => @region_number + 1)
       expect { MiqRegion.seed }.to raise_error(Exception)
-    end
-
-    it "sets the migrations_ran column" do
-      expect(MiqRegion.first.migrations_ran).to match_array(ActiveRecord::SchemaMigration.normalized_versions)
     end
   end
 

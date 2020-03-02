@@ -16,6 +16,10 @@ class MiqScheduleWorker::Jobs
     queue_work(:class_name  => "MiqWorker", :method_name => "log_status_all", :task_id => "log_status", :server_guid => MiqServer.my_guid, :priority => MiqQueue::HIGH_PRIORITY)
   end
 
+  def miq_server_audit_managed_resources
+    queue_work(:class_name  => "MiqServer", :method_name => "audit_managed_resources", :task_id => "audit_managed_resources", :server_guid => MiqServer.my_guid)
+  end
+
   def vmdb_database_connection_log_statistics
     queue_work(:class_name  => "VmdbDatabaseConnection", :method_name => "log_statistics", :server_guid => MiqServer.my_guid)
   end
@@ -68,11 +72,11 @@ class MiqScheduleWorker::Jobs
   end
 
   def metric_capture_perf_capture_timer
-    zone = MiqServer.my_server(true).zone
-    if zone.role_active?("ems_metrics_coordinator")
+    MiqServer.my_server.zone.ems_metrics_collectable.each do |ems|
       queue_work(
         :class_name  => "Metric::Capture",
         :method_name => "perf_capture_timer",
+        :args        => [ems.id],
         :role        => "ems_metrics_coordinator",
         :priority    => MiqQueue::HIGH_PRIORITY,
         :state       => ["ready", "dequeue"]
@@ -106,6 +110,10 @@ class MiqScheduleWorker::Jobs
 
   def policy_event_purge_timer
     queue_work(:class_name => "PolicyEvent", :method_name => "purge_timer", :zone => nil)
+  end
+
+  def compliance_purge_timer
+    queue_work(:class_name => "Compliance", :method_name => "purge_timer", :zone => nil)
   end
 
   def miq_report_result_purge_timer
@@ -160,6 +168,10 @@ class MiqScheduleWorker::Jobs
     ::Settings.database.maintenance.vacuum_tables.each do |class_name|
       queue_work(:class_name => class_name, :method_name => "vacuum", :role => "database_operations", :zone => nil)
     end
+  end
+
+  def queue_miq_queue_check_for_timeout
+    queue_work(:class_name => "MiqQueue", :method_name => "check_for_timeout", :zone => nil)
   end
 
   def check_for_stuck_dispatch(threshold_seconds)

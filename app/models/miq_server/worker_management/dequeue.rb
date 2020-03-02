@@ -47,12 +47,11 @@ module MiqServer::WorkerManagement::Dequeue
   end
 
   def get_queue_message(pid)
-    update_worker_last_heartbeat(pid)
     @workers_lock.synchronize(:SH) do
       w = @workers[pid]
 
       msg = get_queue_message_for_worker(w)
-      msg ? [msg[:id], msg[:lock_version]] : nil
+      [msg[:id], msg[:lock_version]] if msg
     end unless @workers_lock.nil?
   end
 
@@ -96,6 +95,17 @@ module MiqServer::WorkerManagement::Dequeue
       end
     end unless @workers_lock.nil?
     queue_names
+  end
+
+  def register_worker(worker_pid, worker_class, queue_name)
+    worker_class = worker_class.constantize if worker_class.kind_of?(String)
+
+    @workers_lock.synchronize(:EX) do
+      worker_add(worker_pid)
+      h = @workers[worker_pid]
+      h[:class] ||= worker_class
+      h[:queue_name] ||= queue_name
+    end unless @workers_lock.nil?
   end
 
   def populate_queue_messages

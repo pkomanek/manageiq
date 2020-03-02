@@ -30,7 +30,6 @@ class ResourceAction < ApplicationRecord
     end
 
     attrs = (ae_attributes || {}).merge(override_attrs || {})
-    attrs["result_format"] = 'ignore' if resource&.options&.dig(:open_url)
 
     {
       :namespace        => ae_namespace,

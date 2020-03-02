@@ -158,7 +158,7 @@ class Dialog < ApplicationRecord
       tabs.each do |dialog_tab|
         if dialog_tab.key?('id')
           DialogTab.find(dialog_tab['id']).tap do |tab|
-            tab.update_attributes(dialog_tab.except('id', 'href', 'dialog_id', 'dialog_groups'))
+            tab.update(dialog_tab.except('id', 'href', 'dialog_id', 'dialog_groups'))
             tab.update_dialog_groups(dialog_tab['dialog_groups'])
             updated_tabs << tab
           end
@@ -191,8 +191,12 @@ class Dialog < ApplicationRecord
   end
 
   def reject_if_has_resource_actions
-    if resource_actions.length > 0
-      connected_components = resource_actions.collect { |ra| ra.resource_type.constantize.find(ra.resource_id) }
+    connected_components = resource_actions.collect do |ra|
+      # not find - we need nil when not found
+      ra.resource_type.constantize.find_by(:id => ra.resource_id)
+    end.compact
+
+    if connected_components.length > 0
       errors.add(:base, _("Dialog cannot be deleted because it is connected to other components: %{components}") % {:components => connected_components.map { |cc| cc.class.name + ":" + cc.id.to_s + " - " + cc.try(:name) }})
       throw :abort
     end

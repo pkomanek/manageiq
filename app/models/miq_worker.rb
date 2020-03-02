@@ -19,6 +19,8 @@ class MiqWorker < ApplicationRecord
   scope :with_miq_server_id, ->(server_id) { where(:miq_server_id => server_id) }
   scope :with_status,        ->(status)    { where(:status => status) }
 
+  cattr_accessor :my_guid, :instance_accessor => false
+
   STATUS_CREATING = 'creating'.freeze
   STATUS_STARTING = 'starting'.freeze
   STATUS_STARTED  = 'started'.freeze
@@ -46,8 +48,17 @@ class MiqWorker < ApplicationRecord
     attr_writer :workers
   end
 
+  def self.bundler_groups
+    %w[manageiq_default]
+  end
+
+  def self.kill_priority
+    raise NotImplementedError, ".kill_priority must be implemented in a subclass"
+  end
+
   def self.workers
     return (self.has_minimal_env_option? ? 1 : 0) if MiqServer.minimal_env? && check_for_minimal_role
+    return 0 unless has_required_role?
     return @workers.call if @workers.kind_of?(Proc)
     return @workers unless @workers.nil?
     workers_configured_count
@@ -137,7 +148,7 @@ class MiqWorker < ApplicationRecord
   def self.sync_workers
     w       = include_stopping_workers_on_synchronize ? find_alive : find_current_or_starting
     current = w.length
-    desired = self.has_required_role? ? workers : 0
+    desired = workers
     result  = {:adds => [], :deletes => []}
 
     if current != desired
@@ -261,7 +272,7 @@ class MiqWorker < ApplicationRecord
   end
 
   def self.create_worker_record(*params)
-    init_worker_object(*params).tap(&:save)
+    init_worker_object(*params).tap(&:save!)
   end
 
   def self.start_worker(*params)
@@ -270,7 +281,7 @@ class MiqWorker < ApplicationRecord
     w
   end
 
-  cache_with_timeout(:my_worker) { server_scope.find_by(:pid => Process.pid) }
+  cache_with_timeout(:my_worker) { server_scope.find_by(:guid => my_guid) }
 
   def self.status_update_all
     MiqWorker.status_update
@@ -278,67 +289,6 @@ class MiqWorker < ApplicationRecord
 
   def self.log_status_all(level = :info)
     MiqWorker.log_status(level)
-  end
-
-  def self.send_message_to_worker_monitor(wid, message, *args)
-    w = MiqWorker.find_by(:id => wid)
-    raise _("Worker with id=<%{id}> does not exist") % {:id => wid} if w.nil?
-    w.send_message_to_worker_monitor(message, *args)
-  end
-
-  def send_message_to_worker_monitor(message, *args)
-    MiqQueue.put_deprecated(
-      :class_name  => 'MiqServer',
-      :instance_id => miq_server.id,
-      :method_name => 'message_for_worker',
-      :args        => [id, message, *args],
-      :queue_name  => 'miq_server',
-      :zone        => miq_server.zone.name,
-      :server_guid => miq_server.guid
-    )
-  end
-
-  def self.before_fork
-    preload_for_worker_role if respond_to?(:preload_for_worker_role)
-  end
-
-  def self.after_fork
-    close_pg_sockets_inherited_from_parent
-    DRb.stop_service
-    close_drb_pool_connections
-    renice(Process.pid)
-    CodeCoverage.run_hook
-  end
-
-  # When we fork, the children inherits the parent's file descriptors
-  # so we need to close any inherited raw pg sockets in the child.
-  def self.close_pg_sockets_inherited_from_parent
-    owner_to_pool = ActiveRecord::Base.connection_handler.instance_variable_get(:@owner_to_pool)
-    owner_to_pool[Process.ppid].values.compact.each do |pool|
-      pool.connections.each do |conn|
-        socket = conn.raw_connection.socket
-        _log.info("Closing socket: #{socket}")
-        IO.for_fd(socket).close
-      end
-    end
-  end
-
-  # Close all open DRb connections so that connections in the parent's memory space
-  # which is shared due to forking the child process do not pollute the child's DRb
-  # connection pool.  This can lead to errors when the children connect to a server
-  # and get an incorrect response back.
-  #
-  # ref: https://bugs.ruby-lang.org/issues/2718
-  def self.close_drb_pool_connections
-    require 'drb'
-
-    # HACK: DRb doesn't provide an interface to close open pool connections.
-    #
-    # Once that is added this should be replaced.
-    DRb::DRbConn.instance_variable_get(:@mutex).synchronize do
-      DRb::DRbConn.instance_variable_get(:@pool).each(&:close)
-      DRb::DRbConn.instance_variable_set(:@pool, [])
-    end
   end
 
   # Overriding queue_name as now some queue names can be
@@ -358,8 +308,6 @@ class MiqWorker < ApplicationRecord
   end
 
   def self.containerized_worker?
-    # un-rearch containers until further notice
-    return false
     MiqEnvironment::Command.is_podified? && supports_container?
   end
 
@@ -376,14 +324,12 @@ class MiqWorker < ApplicationRecord
   end
 
   def start_runner
-    if ENV['MIQ_SPAWN_WORKERS'] || !Process.respond_to?(:fork)
-      start_runner_via_spawn
-    elsif systemd_worker?
+    if ENV['MIQ_SYSTEMD_WORKERS'] && systemd_worker?
       start_systemd_worker
     elsif containerized_worker?
       start_runner_via_container
     else
-      start_runner_via_fork
+      start_runner_via_spawn
     end
   end
 
@@ -391,24 +337,12 @@ class MiqWorker < ApplicationRecord
     create_container_objects
   end
 
-  def start_runner_via_fork
-    self.class.before_fork
-    pid = fork(:cow_friendly => true) do
-      self.class.after_fork
-      self.class::Runner.start_worker(worker_options)
-      exit!
-    end
-
-    Process.detach(pid)
-    pid
-  end
-
   def self.build_command_line(guid, ems_id = nil)
     raise ArgumentError, "No guid provided" unless guid
 
     require 'awesome_spawn'
     cmd = "#{Gem.ruby} #{runner_script}"
-    cmd = "nice #{nice_increment} #{cmd}" if ENV["APPLIANCE"]
+    cmd = "nice -n #{nice_increment} #{cmd}" if ENV["APPLIANCE"]
 
     options = {:guid => guid, :heartbeat => nil}
     if ems_id
@@ -428,7 +362,11 @@ class MiqWorker < ApplicationRecord
   end
 
   def start_runner_via_spawn
-    pid = Kernel.spawn(command_line, [:out, :err] => [Rails.root.join("log", "evm.log"), "a"])
+    pid = Kernel.spawn(
+      {"BUNDLER_GROUPS" => self.class.bundler_groups.join(",")},
+      command_line,
+      [:out, :err] => [Rails.root.join("log", "evm.log"), "a"]
+    )
     Process.detach(pid)
     pid
   end
@@ -452,6 +390,16 @@ class MiqWorker < ApplicationRecord
   alias_method :restart, :stop
 
   def kill
+    kill_process
+    destroy
+  end
+
+  def kill_process
+    if containerized_worker?
+      delete_container_objects
+      return
+    end
+
     unless pid.nil?
       begin
         _log.info("Killing worker: ID [#{id}], PID [#{pid}], GUID [#{guid}], status [#{status}]")
@@ -466,8 +414,6 @@ class MiqWorker < ApplicationRecord
         _log.warn("Worker ID [#{id}] PID [#{pid}] GUID [#{guid}] has been killed, but with the following error: #{err}")
       end
     end
-
-    destroy
   end
 
   def is_current?
@@ -516,7 +462,7 @@ class MiqWorker < ApplicationRecord
   def log_destroy_of_worker_messages
     ready_messages.each do |m|
       _log.warn("Nullifying: #{MiqQueue.format_full_log_msg(m)}") rescue nil
-      m.update_attributes(:handler_id => nil, :handler_type => nil) rescue nil
+      m.update(:handler_id => nil, :handler_type => nil) rescue nil
     end
 
     processed_messages.each do |m|
@@ -525,6 +471,8 @@ class MiqWorker < ApplicationRecord
   end
 
   def status_update
+    return if MiqEnvironment::Command.is_podified?
+
     begin
       pinfo = MiqProcess.processInfo(pid)
     rescue Errno::ESRCH
@@ -536,7 +484,7 @@ class MiqWorker < ApplicationRecord
       # Ensure the hash only contains the values we want to store in the table
       pinfo.slice!(*PROCESS_INFO_FIELDS)
       pinfo[:os_priority] = pinfo.delete(:priority)
-      update_attributes!(pinfo)
+      update!(pinfo)
     end
   end
 
@@ -629,13 +577,9 @@ class MiqWorker < ApplicationRecord
                          end
   end
 
-  def self.renice(pid)
-    AwesomeSpawn.run("renice", :params =>  {:n => nice_increment, :p => pid })
-  end
-
   def self.nice_increment
     delta = worker_settings[:nice_delta]
-    delta.kind_of?(Integer) ? delta.to_s : "+10"
+    delta.kind_of?(Integer) ? delta.to_s : "10"
   end
 
   def self.display_name(number = 1)

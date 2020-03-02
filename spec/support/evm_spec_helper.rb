@@ -25,13 +25,12 @@ module EvmSpecHelper
     MiqRegion.seed
     miq_server ||= local_miq_server
     ServerRole.find_by(:name => "embedded_ansible") || FactoryBot.create(:server_role, :name => 'embedded_ansible', :max_concurrent => 0)
-    miq_server.assign_role('embedded_ansible').update_attributes(:active => true)
+    miq_server.assign_role('embedded_ansible').update(:active => true)
   end
 
   # Clear all EVM caches
   def self.clear_caches
-    @settings_loaded = Vmdb::Settings.last_loaded
-
+    settings_digest = Digest::MD5.hexdigest(::Settings.to_json)
     yield if block_given?
   ensure
     Module.clear_all_cache_with_timeout if Module.respond_to?(:clear_all_cache_with_timeout)
@@ -42,10 +41,12 @@ module EvmSpecHelper
     clear_instance_variable(BottleneckEvent, :@event_definitions) if defined?(BottleneckEvent)
     clear_instance_variable(Tenant, :@root_tenant) if defined?(Tenant)
 
+    MiqWorker.my_guid = nil
+
     # Clear the thread local variable to prevent test contamination
     User.current_user = nil if defined?(User) && User.respond_to?(:current_user=)
 
-    ::Settings.reload! if @settings_loaded != Vmdb::Settings.last_loaded
+    ::Settings.reload! if Digest::MD5.hexdigest(::Settings.to_json) != settings_digest
   end
 
   def self.clear_instance_variables(instance)
@@ -147,7 +148,7 @@ module EvmSpecHelper
   def self.yaml_import(domain, options, attrs = {})
     Tenant.seed
     MiqAeImport.new(domain, options.merge('tenant' => Tenant.root_tenant)).import
-    dom = MiqAeNamespace.find_by_fqname(domain)
-    dom.update_attributes!(attrs.reverse_merge(:enabled => true)) if dom
+    dom = MiqAeNamespace.lookup_by_fqname(domain)
+    dom&.update(attrs.reverse_merge(:enabled => true))
   end
 end

@@ -1,4 +1,4 @@
-describe MiqServer do
+RSpec.describe MiqServer do
   context ".seed" do
     before do
       MiqRegion.seed
@@ -19,7 +19,7 @@ describe MiqServer do
     let(:guid_file) { Rails.root.join("GUID") }
 
     it "should return the GUID from the file" do
-      MiqServer.my_guid_cache = nil
+      MiqServer.my_guid = nil
       expect(File).to receive(:exist?).with(guid_file).and_return(true)
       expect(File).to receive(:read).with(guid_file).and_return("an-existing-guid\n\n")
       expect(MiqServer.my_guid).to eq("an-existing-guid")
@@ -31,14 +31,14 @@ describe MiqServer do
 
       Tempfile.create do |tempfile|
         stub_const("MiqServer::GUID_FILE", tempfile.path)
-        MiqServer.my_guid_cache = nil
+        MiqServer.my_guid = nil
         expect(MiqServer.my_guid).to eq(test_guid)
         expect(File.read(tempfile)).to eq(test_guid)
       end
     end
 
     it "should not generate a new GUID file if new_guid blows up" do # Test for case 10942
-      MiqServer.my_guid_cache = nil
+      MiqServer.my_guid = nil
       expect(SecureRandom).to receive(:uuid).and_raise(StandardError)
       expect(File).to receive(:exist?).with(guid_file).and_return(false)
       expect(File).not_to receive(:write)
@@ -75,23 +75,6 @@ describe MiqServer do
       end
     end
 
-    describe "#monitor_loop" do
-      it "calls shutdown_and_exit if SIGTERM is raised" do
-        expect(@miq_server).to receive(:monitor).and_raise(SignalException, "SIGTERM")
-        expect(@miq_server).to receive(:shutdown_and_exit)
-
-        @miq_server.monitor_loop
-      end
-
-      it "kills the server and exits if SIGINT is raised" do
-        expect(@miq_server).to receive(:monitor).and_raise(Interrupt)
-        expect(MiqServer).to receive(:kill)
-        expect(@miq_server).to receive(:exit).with(1)
-
-        @miq_server.monitor_loop
-      end
-    end
-
     it "should have proper guid" do
       expect(@miq_server.guid).to eq(@guid)
     end
@@ -116,21 +99,21 @@ describe MiqServer do
     end
 
     it "sync stop will do nothing if stopped" do
-      @miq_server.update_attributes(:status => 'stopped')
+      @miq_server.update(:status => 'stopped')
       expect(@miq_server).to receive(:wait_for_stopped).never
       @miq_server.stop(true)
       expect(MiqQueue.exists?(:method_name => 'shutdown_and_exit', :queue_name => :miq_server, :server_guid => @miq_server.guid)).not_to be_truthy
     end
 
     it "async stop will do nothing if stopped" do
-      @miq_server.update_attributes(:status => 'stopped')
+      @miq_server.update(:status => 'stopped')
       expect(@miq_server).to receive(:wait_for_stopped).never
       @miq_server.stop(false)
       expect(MiqQueue.exists?(:method_name => 'shutdown_and_exit', :queue_name => :miq_server, :server_guid => @miq_server.guid)).not_to be_truthy
     end
 
     it "sync stop will do nothing if killed" do
-      @miq_server.update_attributes(:status => 'killed')
+      @miq_server.update(:status => 'killed')
       @miq_server.reload
       expect(@miq_server).to receive(:wait_for_stopped).never
       @miq_server.stop(true)
@@ -138,21 +121,21 @@ describe MiqServer do
     end
 
     it "sync stop will queue shutdown_and_exit and wait_for_stopped" do
-      @miq_server.update_attributes(:status => 'started')
+      @miq_server.update(:status => 'started')
       expect(@miq_server).to receive(:wait_for_stopped)
       @miq_server.stop(true)
       expect(MiqQueue.exists?(:method_name => 'shutdown_and_exit', :queue_name => :miq_server, :server_guid => @miq_server.guid)).to be_truthy
     end
 
     it "async stop will queue shutdown_and_exit and return" do
-      @miq_server.update_attributes(:status => 'started')
+      @miq_server.update(:status => 'started')
       expect(@miq_server).to receive(:wait_for_stopped).never
       @miq_server.stop(false)
       expect(MiqQueue.exists?(:method_name => 'shutdown_and_exit', :queue_name => :miq_server, :server_guid => @miq_server.guid)).to be_truthy
     end
 
     it "async stop will not update existing exit message and return" do
-      @miq_server.update_attributes(:status => 'started')
+      @miq_server.update(:status => 'started')
       expect(@miq_server).to receive(:wait_for_stopped).never
       @miq_server.stop(false)
     end
@@ -188,6 +171,13 @@ describe MiqServer do
         @miq_server.destroy
 
         expect(@miq_server.errors.full_messages.first).to match(/recently/)
+      end
+
+      it "doesn't enforce when podified" do
+        allow(MiqEnvironment::Command).to receive(:is_podified?).and_return(true)
+        allow(@miq_server).to receive(:is_local?).and_return(true)
+        @miq_server.last_heartbeat = 2.minutes.ago.utc
+        @miq_server.destroy!
       end
     end
 
@@ -271,7 +261,8 @@ describe MiqServer do
 
     context "with a worker" do
       before do
-        @worker = FactoryBot.create(:miq_worker, :miq_server_id => @miq_server.id, :pid => Process.pid)
+        MiqWorkerType.seed
+        @worker = FactoryBot.create(:miq_generic_worker, :miq_server_id => @miq_server.id, :pid => Process.pid)
         allow(@miq_server).to receive(:validate_worker).and_return(true)
         @miq_server.setup_drb_variables
         @miq_server.worker_add(@worker.pid)
@@ -296,7 +287,7 @@ describe MiqServer do
       it "quiesce_workers do mini-monitor_workers loop" do
         expect(@miq_server).to receive(:heartbeat)
         expect(@miq_server).to receive(:quiesce_workers_loop_timeout?).never
-        allow_any_instance_of(MiqWorker).to receive(:is_stopped?).and_return(true, false)
+        @worker.update(:status => MiqWorker::STATUS_STOPPED)
         @miq_server.workers_quiesced?
       end
 
@@ -315,58 +306,6 @@ describe MiqServer do
         @miq_server.instance_variable_set(:@quiesce_loop_timeout, 10.minutes)
         expect_any_instance_of(MiqWorker).to receive(:kill).never
         expect(@miq_server.quiesce_workers_loop_timeout?).not_to be_truthy
-      end
-
-      context "with an active messsage and a second server" do
-        before do
-          @msg = FactoryBot.create(:miq_queue, :state => 'dequeue')
-          @miq_server2 = FactoryBot.create(:miq_server, :is_master => true, :zone => @zone)
-        end
-
-        it "will validate the 'started' first server's active message when called on it" do
-          @msg.handler = @miq_server.reload
-          @msg.save
-          expect_any_instance_of(MiqQueue).to receive(:check_for_timeout)
-          @miq_server.validate_active_messages
-        end
-
-        it "will validate the 'not responding' first server's active message when called on it" do
-          @miq_server.update_attribute(:status, 'not responding')
-          @msg.handler = @miq_server.reload
-          @msg.save
-          expect_any_instance_of(MiqQueue).to receive(:check_for_timeout)
-          @miq_server.validate_active_messages
-        end
-
-        it "will validate the 'not resonding' second server's active message when called on first server" do
-          @miq_server2.update_attribute(:status, 'not responding')
-          @msg.handler = @miq_server2
-          @msg.save
-          expect_any_instance_of(MiqQueue).to receive(:check_for_timeout)
-          @miq_server.validate_active_messages
-        end
-
-        it "will NOT validate the 'started' second server's active message when called on first server" do
-          @miq_server2.update_attribute(:status, 'started')
-          @msg.handler = @miq_server2
-          @msg.save
-          expect_any_instance_of(MiqQueue).to receive(:check_for_timeout).never
-          @miq_server.validate_active_messages
-        end
-
-        it "will validate a worker's active message when called on the worker's server" do
-          @msg.handler = @worker
-          @msg.save
-          expect_any_instance_of(MiqQueue).to receive(:check_for_timeout)
-          @miq_server.validate_active_messages
-        end
-
-        it "will not validate a worker's active message when called on the worker's server if already processed" do
-          @msg.handler = @worker
-          @msg.save
-          expect_any_instance_of(MiqQueue).to receive(:check_for_timeout).never
-          @miq_server.validate_active_messages([@worker.id])
-        end
       end
 
       context "#server_timezone" do
@@ -479,6 +418,64 @@ describe MiqServer do
     it "doesnt blowup" do
       s = described_class.new(:name => "name")
       expect(s.description).to eq(s.name)
+    end
+  end
+
+  describe "#zone_unchanged_in_pods" do
+    it "allows zone changes when not in pods" do
+      server = FactoryBot.create(:miq_server)
+      zone = FactoryBot.create(:zone)
+
+      server.zone = zone
+      expect(server.zone_id_changed?).to be_truthy
+      expect(server.save).to be_truthy
+    end
+
+    it "prevents zone changes in pods" do
+      allow(MiqEnvironment::Command).to receive(:is_podified?).and_return(true)
+      server = FactoryBot.create(:miq_server)
+      zone = FactoryBot.create(:zone)
+
+      server.zone = zone
+      expect(server.zone_id_changed?).to be_truthy
+      expect(server.save).to be_falsey
+    end
+  end
+
+  describe ".zone_is_modifiable?" do
+    it "is true when there are multiple zones in the region" do
+      FactoryBot.create(:miq_server)
+      FactoryBot.create(:zone)
+
+      expect(described_class.zone_is_modifiable?).to be_truthy
+    end
+
+    it "is false when there is only one zone" do
+      FactoryBot.create(:miq_server)
+      expect(Zone.count).to eq(1)
+      expect(described_class.zone_is_modifiable?).to be_falsey
+    end
+
+    it "is false when in pods" do
+      allow(MiqEnvironment::Command).to receive(:is_podified?).and_return(true)
+      FactoryBot.create(:miq_server)
+      FactoryBot.create(:zone)
+
+      expect(described_class.zone_is_modifiable?).to be_falsey
+    end
+  end
+
+  context ".managed_resources" do
+    before { MiqRegion.seed }
+
+    let(:ems) { FactoryBot.create(:ems_infra) }
+    let!(:active_vm) { FactoryBot.create(:vm_infra, :ext_management_system => ems) }
+    let!(:archived_vm) { FactoryBot.create(:vm_infra) }
+    let!(:active_host) { FactoryBot.create(:host, :ext_management_system => ems) }
+    let!(:archived_host) { FactoryBot.create(:host) }
+
+    it "with active and archived vms and hosts" do
+      expect(described_class.managed_resources).to include(:vms => 1, :hosts => 1)
     end
   end
 end

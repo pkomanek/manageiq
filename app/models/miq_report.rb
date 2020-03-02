@@ -47,7 +47,7 @@ class MiqReport < ApplicationRecord
   attr_accessor :ext_options
   attr_accessor_that_yamls :table, :sub_table, :filter_summary, :extras, :ids, :scoped_association, :html_title, :file_name,
                            :extras, :record_id, :tl_times, :user_categories, :trend_data, :performance, :include_for_find,
-                           :report_run_time, :chart, :skip_references
+                           :report_run_time, :chart
 
   attr_accessor_that_yamls :reserved # For legacy imports
 
@@ -284,10 +284,10 @@ class MiqReport < ApplicationRecord
   end
 
   def format_row(row, allowed_columns = nil, expand_value_format = nil)
-    @tz ||= get_time_zone(Time.zone)
+    tz = get_time_zone(User.current_user.settings.fetch_path(:display, :timezone).presence || Time.zone)
     row.map do |key, _|
-      value = allowed_columns.nil? || allowed_columns&.include?(key) ? format_column(key, row, @tz, col_format_hash[key]) : row[key]
-      [key, expand_value_format.present? ? { :value => value, :style_class => get_style_class(key, row, @tz) } : value]
+      value = allowed_columns.nil? || allowed_columns&.include?(key) ? format_column(key, row, tz, col_format_hash[key]) : row[key]
+      [key, expand_value_format.present? ? { :value => value, :style_class => get_style_class(key, row, tz) } : value]
     end.to_h
   end
 
@@ -295,10 +295,14 @@ class MiqReport < ApplicationRecord
     result_set.map { |row| format_row(row, skip_columns, hash_value_format) }
   end
 
-  def filter_result_set(result_set, options)
-    filter_columns = validate_columns(options[:filter_column])
-    formatted_result_set = format_result_set(result_set, filter_columns)
-    result_set_filtered = formatted_result_set.select { |x| x[options[:filter_column]].include?(options[:filter_string]) }
+  def filter_result_set_record(record, filter_options)
+    filter_options.all? { |column, search_string| record[column].include?(search_string) }
+  end
+
+  def filter_result_set(result_set, filter_options)
+    validated_filter_columns = validate_columns(filter_options.keys)
+    formatted_result_set = format_result_set(result_set, validated_filter_columns)
+    result_set_filtered = formatted_result_set.select { |record| filter_result_set_record(record, filter_options) }
 
     [result_set_filtered, result_set_filtered.count]
   end

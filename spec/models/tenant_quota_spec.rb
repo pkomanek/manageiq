@@ -1,4 +1,4 @@
-describe TenantQuota do
+RSpec.describe TenantQuota do
   let(:tenant) { FactoryBot.create(:tenant) }
 
   describe "#valid?" do
@@ -241,6 +241,19 @@ describe TenantQuota do
       it "displays available resources for 'Allocated Number of Templates' quota" do
         expect(tenant_quota_templates.available).to eq(1.0)
       end
+    end
+  end
+
+  describe ".format_quota_value" do
+    let(:quota_name) { "cpu_allocated" }
+    let(:quota_description) { "Allocated Virtual CPUs" }
+
+    it "returns quota description if field to format is 'tenant_quotas.name'" do
+      expect(described_class.format_quota_value("tenant_quotas.name", "something", quota_name)).to eq(quota_description)
+    end
+
+    it "returns quota description if field to format is 'tenant_quotas.description'" do
+      expect(described_class.format_quota_value("tenant_quotas.description", "something", quota_name)).to eq(quota_description)
     end
   end
 

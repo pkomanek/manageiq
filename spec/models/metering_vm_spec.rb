@@ -1,4 +1,4 @@
-describe MeteringVm do
+RSpec.describe MeteringVm do
   include Spec::Support::ChargebackHelper
 
   let(:admin) { FactoryBot.create(:user_admin) }
@@ -29,7 +29,7 @@ describe MeteringVm do
   let(:vm) { FactoryBot.create(:vm_vmware, :name => "test_vm", :evm_owner => admin, :ems_ref => "ems_ref", :created_on => month_beginning) }
   let(:hardware) { FactoryBot.create(:hardware, :memory_mb => 8124, :cpu_total_cores => 1, :cpu_speed => 9576) }
   let(:host) { FactoryBot.create(:host, :storages => [storage], :hardware => hardware, :vms => [vm]) }
-  let(:storage) { FactoryBot.create(:storage_target_vmware) }
+  let(:storage) { FactoryBot.create(:storage_vmware) }
   let(:ems_cluster) { FactoryBot.create(:ems_cluster, :ext_management_system => ems, :hosts => [host]) }
 
   before do
@@ -128,16 +128,16 @@ describe MeteringVm do
       let(:end_of_resource_existence)       { month_beginning + 20.days }
 
       it 'uses datetime from Vm#created_on and Vm#retires_on' do
-        vm.update_attributes(:created_on => beginning_of_resource_existence, :retires_on => end_of_resource_existence)
-        vm.metric_rollups.each { |mr| mr.update_attributes(:timestamp => beginning_of_resource_existence) }
+        vm.update(:created_on => beginning_of_resource_existence, :retires_on => end_of_resource_existence)
+        vm.metric_rollups.each { |mr| mr.update(:timestamp => beginning_of_resource_existence) }
 
         expect(subject.beginning_of_resource_existence_in_report_interval).to eq(beginning_of_resource_existence)
         expect(subject.end_of_resource_existence_in_report_interval).to eq(end_of_resource_existence)
       end
 
       it 'uses datetime from Vm#created_on and Vm#updated_on when vm is disconnected' do
-        vm.update_attributes(:created_on => beginning_of_resource_existence)
-        vm.metric_rollups.each { |mr| mr.update_attributes(:timestamp => beginning_of_resource_existence) }
+        vm.update(:created_on => beginning_of_resource_existence)
+        vm.metric_rollups.each { |mr| mr.update(:timestamp => beginning_of_resource_existence) }
 
         Timecop.travel(report_run_time - 5.days - 5.hours)
 

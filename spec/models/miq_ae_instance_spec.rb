@@ -1,4 +1,4 @@
-describe MiqAeInstance do
+RSpec.describe MiqAeInstance do
   context "legacy tests" do
     before do
       @user = FactoryBot.create(:user_with_group)
@@ -17,6 +17,13 @@ describe MiqAeInstance do
       expect(@c2.ae_instances).not_to be_nil
       expect(@c2.ae_instances.count).to eq(1)
       i1.destroy
+    end
+
+    it "should lookup instance by name" do
+      iname = "instance"
+      instance = @c1.ae_instances.create(:name => iname)
+
+      expect(MiqAeInstance.lookup_by_name(iname)).to eq(instance)
     end
 
     it "should set the updated_by field on save" do

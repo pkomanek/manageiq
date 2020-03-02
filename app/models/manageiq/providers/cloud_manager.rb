@@ -3,6 +3,7 @@ module ManageIQ::Providers
     require_nested :AuthKeyPair
     require_nested :RefreshParser
     require_nested :Template
+    require_nested :MetricsCapture
     require_nested :Provision
     require_nested :ProvisionWorkflow
     require_nested :Vm
@@ -127,13 +128,13 @@ module ManageIQ::Providers
 
         if tenant.parent == source_tenant # tenant is already under provider's tenant
           _log.info("Setting source_id and source_type to nil for #{tenant.name} under provider's tenant #{source_tenant.name}")
-          tenant.update_attributes(:source_id => nil, :source_type => nil)
+          tenant.update(:source_id => nil, :source_type => nil)
           next
         end
 
         # move tenant under the provider's tenant
         _log.info("Moving out #{tenant.name} under provider's tenant #{source_tenant.name}")
-        tenant.update_attributes(:parent => source_tenant, :source_id => nil, :source_type => nil)
+        tenant.update(:parent => source_tenant, :source_id => nil, :source_type => nil)
       end
     end
 
@@ -142,7 +143,7 @@ module ManageIQ::Providers
 
       ems_tenant_name = "#{self.class.description} Cloud Provider #{name}"
 
-      ems_tenant.update_attributes!(:name => ems_tenant_name, :description => ems_tenant_name)
+      ems_tenant.update!(:name => ems_tenant_name, :description => ems_tenant_name)
     end
 
     def create_cloud_tenant(options)
@@ -159,6 +160,8 @@ module ManageIQ::Providers
 
     def destroy_mapped_tenants
       if source_tenant
+        # We just destroyed ourself, reload the source_tenant association
+        source_tenant.reload
         source_tenant.all_subtenants.destroy_all
         source_tenant.all_subprojects.destroy_all
         source_tenant.destroy

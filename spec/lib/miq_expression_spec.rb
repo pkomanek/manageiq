@@ -1,4 +1,4 @@
-describe MiqExpression do
+RSpec.describe MiqExpression do
   describe '#reporting_available_fields' do
     let(:vm) { FactoryBot.create(:vm) }
     let!(:custom_attribute) { FactoryBot.create(:custom_attribute, :name => 'my_attribute_1', :resource => vm) }
@@ -49,7 +49,7 @@ describe MiqExpression do
           expect(report_fields).to include(volume_2_type_field_cost)
 
           # case: change name
-          volume_2.update_attributes!(:volume_type => 'NEW_TYPE_2')
+          volume_2.update!(:volume_type => 'NEW_TYPE_2')
           ChargebackVm.current_volume_types_clear_cache
           report_fields = described_class.reporting_available_fields(model).map(&:second)
           expect(report_fields).to include(volume_1_type_field_cost)
@@ -493,17 +493,17 @@ describe MiqExpression do
       expect(sql).to eq("\"vms\".\"id\" IN (SELECT DISTINCT \"guest_applications\".\"vm_or_template_id\" FROM \"guest_applications\" WHERE \"guest_applications\".\"name\" = 'foo')")
     end
 
-    it "cant generates the SQL for a CONTAINS expression with association.association-field" do
+    it "can't generate the SQL for a CONTAINS expression with association.association-field" do
       sql, * = MiqExpression.new("CONTAINS" => {"field" => "Vm.guest_applications.host-name", "value" => "foo"}).to_sql
       expect(sql).to be_nil
     end
 
-    it "cant generat the SQL for a CONTAINS expression virtualassociation" do
+    it "can't generate the SQL for a CONTAINS expression virtualassociation" do
       sql, * = MiqExpression.new("CONTAINS" => {"field" => "Vm.processes-name", "value" => "foo"}).to_sql
       expect(sql).to be_nil
     end
 
-    it "cant generat the SQL for a CONTAINS expression with [association.virtualassociation]" do
+    it "can't generate the SQL for a CONTAINS expression with [association.virtualassociation]" do
       sql, * = MiqExpression.new("CONTAINS" => {"field" => "Vm.users.active_vms-name", "value" => "foo"}).to_sql
       expect(sql).to be_nil
     end
@@ -2088,48 +2088,6 @@ describe MiqExpression do
     end
   end
 
-  context 'value2tag' do
-    it 'dotted notation with Taq' do
-      expect(described_class.value2tag('Vm.managed-amazon:vm:name', "mapped:smartstate")).to eq ["vm", "/managed/amazon:vm:name/mapped:smartstate"]
-    end
-
-    it 'dotted notation with CountField' do
-      expect(described_class.value2tag('Vm.disks')).to eq ['vm', '/virtual/disks']
-    end
-
-    it 'dotted notation with CountField' do
-      expect(described_class.value2tag('Vm.host.policy_events')).to eq ['vm', '/virtual/host/policy_events']
-    end
-
-    it "dotted notation with value" do
-      expect(described_class.value2tag("Vm.host-name", "thing1")).to eq ["vm", "/virtual/host/name/thing1"]
-    end
-
-    it "value with escaped slash" do
-      expect(described_class.value2tag("Vm.host-name", "thing1/thing2")).to eq ["vm", "/virtual/host/name/thing1%2fthing2"]
-    end
-
-    it "user_tag" do
-      expect(described_class.value2tag("Vm.user_tag-name", "thing1")).to eq ["vm", "/user/name/thing1"]
-    end
-
-    it "model and column" do
-      expect(described_class.value2tag("Vm-name", "thing1")).to eq ["vm", "/virtual/name/thing1"]
-    end
-
-    it "managed" do
-      expect(described_class.value2tag("Vm.managed-host", "thing1")).to eq ["vm", "/managed/host/thing1"]
-    end
-
-    it "managed" do
-      expect(described_class.value2tag("Vm.managed-host")).to eq ["vm", "/managed/host"]
-    end
-
-    it "false value" do
-      expect(described_class.value2tag("MiqGroup.vms-disconnected", false)).to eq ["miqgroup", "/virtual/vms/disconnected/false"]
-    end
-  end
-
   describe ".numeric?" do
     it "should return true if digits separated by comma and false if another separator used" do
       expect(MiqExpression.numeric?('10000.55')).to be_truthy
@@ -2522,8 +2480,8 @@ describe MiqExpression do
     end
   end
 
-  describe ".get_col_type" do
-    subject { described_class.get_col_type(@field) }
+  describe ".parse_field_or_tag" do
+    subject { described_class.parse_field_or_tag(@field).try(:column_type) }
     let(:string_custom_attribute) do
       FactoryBot.create(:custom_attribute,
                          :name          => "foo",
@@ -2539,7 +2497,7 @@ describe MiqExpression do
 
     it "with model-field__with_pivot_table_suffix" do
       @field = "Vm-name__pv"
-      expect(subject).to eq(described_class.get_col_type("Vm-name"))
+      expect(subject).to eq(described_class.parse_field_or_tag("Vm-name").try(:column_type))
     end
 
     it "with custom attribute without value_type" do

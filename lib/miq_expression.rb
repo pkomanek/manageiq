@@ -14,6 +14,14 @@ class MiqExpression
   FORMAT_SUB_TYPES = config[:format_sub_types]
   FORMAT_BYTE_SUFFIXES = FORMAT_SUB_TYPES[:bytes][:units].to_h.invert
   BYTE_FORMAT_WHITELIST = Hash[FORMAT_BYTE_SUFFIXES.keys.collect(&:to_s).zip(FORMAT_BYTE_SUFFIXES.keys)]
+  NUM_OPERATORS        = config[:num_operators].freeze
+  STRING_OPERATORS     = config[:string_operators]
+  SET_OPERATORS        = config[:set_operators]
+  REGKEY_OPERATORS     = config[:regkey_operators]
+  BOOLEAN_OPERATORS    = config[:boolean_operators]
+  DATE_TIME_OPERATORS  = config[:date_time_operators]
+  DEPRECATED_OPERATORS = config[:deprecated_operators]
+  UNQUOTABLE_OPERATORS = (STRING_OPERATORS + DEPRECATED_OPERATORS - ['=', 'IS NULL', 'IS NOT NULL', 'IS EMPTY', 'IS NOT EMPTY']).freeze
 
   def initialize(exp, ctype = nil)
     @exp = exp
@@ -129,13 +137,13 @@ class MiqExpression
       clause = "#{operands.first} #{operator} #{operands.last}"
     when "between dates", "between times"
       col_name = exp[operator]["field"]
-      col_type = get_col_type(col_name)
+      col_type = parse_field_or_tag(col_name)&.column_type
       col_human, _value = operands2humanvalue(exp[operator], options)
       vals_human = exp[operator]["value"].collect { |v| quote_human(v, col_type) }
       clause = "#{col_human} #{operator} #{vals_human.first} AND #{vals_human.last}"
     when "from"
       col_name = exp[operator]["field"]
-      col_type = get_col_type(col_name)
+      col_type = parse_field_or_tag(col_name)&.column_type
       col_human, _value = operands2humanvalue(exp[operator], options)
       vals_human = exp[operator]["value"].collect { |v| quote_human(v, col_type) }
       clause = "#{col_human} #{operator} #{vals_human.first} THROUGH #{vals_human.last}"
@@ -165,12 +173,12 @@ class MiqExpression
       operands = operands2rubyvalue(operator, op_args, context_type)
       clause = operands.join(" #{normalize_ruby_operator(operator)} ")
     when "before"
-      col_type = get_col_type(col_name) if col_name
+      col_type = parse_field_or_tag(col_name)&.column_type if col_name
       col_ruby, _value = operands2rubyvalue(operator, {"field" => col_name}, context_type)
       val = op_args["value"]
       clause = ruby_for_date_compare(col_ruby, col_type, tz, "<", val)
     when "after"
-      col_type = get_col_type(col_name) if col_name
+      col_type = parse_field_or_tag(col_name)&.column_type if col_name
       col_ruby, _value = operands2rubyvalue(operator, {"field" => col_name}, context_type)
       val = op_args["value"]
       clause = ruby_for_date_compare(col_ruby, col_type, tz, nil, nil, ">", val)
@@ -226,8 +234,8 @@ class MiqExpression
     when "contains"
       op_args["tag"] ||= col_name
       operands = if context_type != "hash"
-                   ref, val = value2tag(op_args["tag"], op_args["value"])
-                   ["<exist ref=#{ref}>#{val}</exist>"]
+                   target = parse_field_or_tag(op_args["tag"])
+                   ["<exist ref=#{target.model.to_s.downcase}>#{target.tag_path_with(op_args["value"])}</exist>"]
                  elsif context_type == "hash"
                    # This is only for supporting reporting "display filters"
                    # In the report object the tag value is actually the description and not the raw tag name.
@@ -257,12 +265,12 @@ class MiqExpression
       clause = "<find><search>" + _to_ruby(op_args["search"], context_type, tz) + "</search>" \
                "<check mode=#{mode}>" + _to_ruby(op_args[check], context_type, tz) + "</check></find>"
     when "key exists"
-      clause = operands2rubyvalue(operator, op_args, context_type)
+      clause, = operands2rubyvalue(operator, op_args, context_type)
     when "value exists"
-      clause = operands2rubyvalue(operator, op_args, context_type)
+      clause, = operands2rubyvalue(operator, op_args, context_type)
     when "is"
       col_ruby, _value = operands2rubyvalue(operator, {"field" => col_name}, context_type)
-      col_type = get_col_type(col_name)
+      col_type = parse_field_or_tag(col_name)&.column_type
       value = op_args["value"]
       clause = if col_type == :date && !RelativeDatetime.relative?(value)
                  ruby_for_date_compare(col_ruby, col_type, tz, "==", value)
@@ -271,7 +279,7 @@ class MiqExpression
                end
     when "from"
       col_ruby, _value = operands2rubyvalue(operator, {"field" => col_name}, context_type)
-      col_type = get_col_type(col_name)
+      col_type = parse_field_or_tag(col_name)&.column_type
 
       start_val, end_val = op_args["value"]
       clause = ruby_for_date_compare(col_ruby, col_type, tz, ">=", start_val, "<=", end_val)
@@ -528,7 +536,7 @@ class MiqExpression
         if ops["value"] == :user_input
           ret.push("<user input>")
         else
-          col_type = get_col_type(ops["field"]) || "string"
+          col_type = parse_field_or_tag(ops["field"])&.column_type || "string"
           ret.push(quote_human(ops["value"], col_type.to_s))
         end
       end
@@ -579,7 +587,7 @@ class MiqExpression
     end
     if val_is_a_tag
       if col
-        classification = options[:classification] || Classification.find_by_name(col) # rubocop:disable Rails/DynamicFindBy
+        classification = options[:classification] || Classification.lookup_by_name(col)
         ret << (classification ? classification.description : col)
       end
     else
@@ -598,44 +606,38 @@ class MiqExpression
     ret
   end
 
-  def self.operands2rubyvalue(operator, ops, context_type)
-    # puts "Enter: operands2rubyvalue: operator: #{operator}, ops: #{ops.inspect}"
+  def self.quote_by(operator, value, column_type = nil)
+    if UNQUOTABLE_OPERATORS.map(&:downcase).include?(operator)
+      value
+    else
+      quote(value, column_type.to_s)
+    end
+  end
 
+  def self.operands2rubyvalue(operator, ops, context_type)
     if ops["field"]
       if ops["field"] == "<count>"
         ["<count>", quote(ops["value"], "integer")]
       else
-        col_type = get_col_type(ops["field"]) || "string"
-        case context_type
-        when "hash"
-          val = ops["field"].split(".").last.split("-").join(".")
-          fld = "<value type=#{col_type}>#{val}</value>"
-        else
-          ref, val = value2tag(ops["field"])
-          fld = "<value ref=#{ref}, type=#{col_type}>#{val}</value>"
-        end
-        if ["like", "not like", "starts with", "ends with", "includes", "regular expression matches", "regular expression does not match"].include?(operator)
-          [fld, ops["value"]]
-        else
-          [fld, quote(ops["value"], col_type.to_s)]
-        end
+        target = parse_field_or_tag(ops["field"])
+        col_type = target&.column_type || "string"
+
+        [if context_type == "hash"
+           "<value type=#{col_type}>#{ops["field"].split(".").last.split("-").join(".")}</value>"
+         else
+           "<value ref=#{target.model.to_s.downcase}, type=#{col_type}>#{target.tag_path_with}</value>"
+         end, quote_by(operator, ops["value"], col_type)]
       end
     elsif ops["count"]
       target = parse_field_or_tag(ops["count"])
-      fld = "<count ref=#{target.model.to_s.downcase}>#{target.tag_path_with}</count>"
-      [fld, quote(ops["value"], target.column_type)]
+      ["<count ref=#{target.model.to_s.downcase}>#{target.tag_path_with}</count>", quote(ops["value"], target.column_type)]
     elsif ops["regkey"]
       if operator == "key exists"
-        "<registry key_exists=1, type=boolean>#{ops["regkey"].strip}</registry>  == 'true'"
+        ["<registry key_exists=1, type=boolean>#{ops["regkey"].strip}</registry>  == 'true'", nil]
       elsif operator == "value exists"
-        "<registry value_exists=1, type=boolean>#{ops["regkey"].strip} : #{ops["regval"]}</registry>  == 'true'"
+        ["<registry value_exists=1, type=boolean>#{ops["regkey"].strip} : #{ops["regval"]}</registry>  == 'true'", nil]
       else
-        fld = "<registry>#{ops["regkey"].strip} : #{ops["regval"]}</registry>"
-        if ["like", "not like", "starts with", "ends with", "includes", "regular expression matches", "regular expression does not match"].include?(operator)
-          [fld, ops["value"]]
-        else
-          [fld, quote(ops["value"], "string")]
-        end
+        ["<registry>#{ops["regkey"].strip} : #{ops["regval"]}</registry>", quote_by(operator, ops["value"], "string")]
       end
     end
   end
@@ -644,7 +646,7 @@ class MiqExpression
     if Field.is_field?(val)
       target = parse_field_or_tag(val)
       value = target.tag_path_with
-      col_type = target.try(:column_type) || "string"
+      col_type = target&.column_type || "string"
 
       reference_attribute = target ? "ref=#{target.model.to_s.downcase}, " : " "
       return "<value #{reference_attribute}type=#{col_type}>#{value}</value>"
@@ -733,11 +735,6 @@ class MiqExpression
     else
       [attribute, false]
     end
-  end
-
-  def self.value2tag(tag, val = nil)
-    target = parse_field_or_tag(tag)
-    [target.model.to_s.downcase, target.tag_path_with(val)]
   end
 
   def self.normalize_ruby_operator(str)
@@ -949,9 +946,8 @@ class MiqExpression
 
       next if ref.macro == :belongs_to && model.name != parent[:root]
 
-      # REMOVE ME: workaround to temporarily exlude certain mdoels from the relationships
-      excluded_models = EXCLUDE_FROM_RELATS[model.name]
-      next if excluded_models && excluded_models.include?(assoc.to_s)
+      # REMOVE ME: workaround to temporarily exclude certain models from the relationships
+      next if EXCLUDE_FROM_RELATS[model.name]&.include?(assoc.to_s)
 
       assoc_class = ref.klass.name
 
@@ -1037,23 +1033,12 @@ class MiqExpression
     end.compact
   end
 
-  def self.get_col_type(field)
-    parse_field_or_tag(field).try(:column_type)
-  end
-
-  NUM_OPERATORS     = config[:num_operators].freeze
-  STRING_OPERATORS  = config[:string_operators]
-  SET_OPERATORS     = config[:set_operators]
-  REGKEY_OPERATORS  = config[:regkey_operators]
-  BOOLEAN_OPERATORS = config[:boolean_operators]
-  DATE_TIME_OPERATORS = config[:date_time_operators]
-
   def self.get_col_operators(field)
     col_type =
       if field == :count || field == :regkey
         field
       else
-        get_col_type(field.to_s) || :string
+        parse_field_or_tag(field.to_s)&.column_type || :string
       end
 
     case col_type.to_s.downcase.to_sym
@@ -1084,7 +1069,7 @@ class MiqExpression
 
     if ns == "managed"
       cat = field.split("-").last
-      catobj = Classification.find_by_name(cat) # rubocop:disable Rails/DynamicFindBy
+      catobj = Classification.lookup_by_name(cat)
       return catobj ? catobj.entries.collect { |e| [e.description, e.name] } : []
     elsif ns == "user_tag" || ns == "user"
       cat = field.split("-").last
